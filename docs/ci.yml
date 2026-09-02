@@ -1,0 +1,46 @@
+# >>> Mover para .github/workflows/ci.yml (o conector do Claude não tem permissão de escrever workflows) <<<
+name: CI — isolamento entre marcas
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  isolation:
+    name: Teste de isolamento entre marcas
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: supabase/postgres:17.6.1.084
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+    env:
+      PGPASSWORD: postgres
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - name: Aplicar migrations
+        run: |
+          for f in supabase/migrations/*.sql; do
+            echo "== $f"; psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
+      - name: Rodar teste de isolamento
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/tests/isolation.sql
+
+  build:
+    name: Build Next.js
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm install
+      - run: npm run build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: build-only
