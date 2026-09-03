@@ -100,7 +100,8 @@ export async function POST(req: Request) {
       verdict = { verdict: "moderacao", reason: `mensagem com ${(cls.flags ?? []).join(", ")}`, escalate_to: null };
     } else for (;;) {
       draft = await write(voice, cls, clean, ctx, examples, hint, { firstName, history: historyText, surface });
-      verdict = await guard(voice, cls, clean, draft, ctx, historyText, surface);
+      try { verdict = await guard(voice, cls, clean, draft, ctx, historyText, surface); }
+      catch { verdict = cycles < 2 ? { verdict: "reescrita", reason: "revisor ilegível", rewrite_hint: "responda mais curto e simples" } : { verdict: "escalar", reason: "revisor indisponível", escalate_to: "sac" }; }
       // Sinal de crise/ameaça/jurídico/menor: nunca sai resposta direta — vai para o SAC com acolhimento neutro.
       if (severe && verdict.verdict !== "bloqueada") { verdict = { verdict: "escalar", reason: `sinal sensível: ${(cls.flags ?? []).join(", ")}`, escalate_to: "sac" }; break; }
       if (verdict.verdict !== "reescrita" || cycles >= 2) break;
