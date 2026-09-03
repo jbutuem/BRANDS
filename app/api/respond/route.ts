@@ -9,9 +9,9 @@ export const maxDuration = 120;
 export const runtime = "nodejs";
 
 /**
- * POST { text, channel, conversationId?, messageId? }
+ * POST { text, channel, contactName?, conversationId?, messageId? }
  * Pipeline: Scrubber → Classificador → Retriever → Redator → Guardião (máx. 2 ciclos).
- * brand_id vem SEMPRE da sessão. Texto bruto nunca é gravado.
+ * brand_id vem SEMPRE da sessão. Texto bruto e nome nunca são gravados.
  */
 export async function POST(req: Request) {
   const t0 = Date.now();
@@ -27,9 +27,23 @@ export async function POST(req: Request) {
   let cls: Classification;
   try { cls = await classify(active.name, s.text); }
   catch { cls = { intent: "outro", products: [], uf: detectUf(s.text), city: null, sentiment: "neutro", personal_names: [], summary: "" }; }
-  const clean = scrubNames(s.text, cls.personal_names ?? [], s.report);
+  // Nome: vive só neste request. Vem do operador ou do classificador; nunca é gravado.
+  const contactName: string | null = (String(body.contactName ?? "").trim() || cls.personal_names?.[0] || null);
+  const firstName = contactName ? contactName.split(/\s+/)[0] : null;
+  const namesToMask = [...new Set([...(cls.personal_names ?? []), ...(contactName ? [contactName, firstName!] : [])])];
+  const clean = scrubNames(s.text, namesToMask, s.report);
   cls.personal_names = []; // não persiste nomes nem na classificação
   if (!cls.uf) cls.uf = detectUf(clean);
+
+  // Histórico do atendimento (já anonimizado) — permite continuar a conversa
+  let history: { direction: string; content: string }[] = [];
+  if (body.conversationId) {
+    const { data: h } = await sb.from("messages").select("direction, content").eq("conversation_id", body.conversationId).order("created_at").limit(20);
+    history = h ?? [];
+    const prevUf = (await sb.from("conversations").select("region_uf").eq("id", body.conversationId).maybeSingle()).data?.region_uf;
+    if (!cls.uf && prevUf) cls.uf = prevUf;
+  }
+  const historyText = history.length ? history.map((m) => `${m.direction === "in" ? "CLIENTE" : active.name.toUpperCase()}: ${m.content}`).join("\n") : "";
 
   // 2. Retriever — estruturado primeiro, texto depois (RLS + brand da sessão)
   const q = [cls.summary, ...(cls.products ?? [])].filter(Boolean).join(" ") || clean;
@@ -75,8 +89,8 @@ export async function POST(req: Request) {
   let draft = "", verdict = { verdict: "aprovada" as const, reason: "" } as Awaited<ReturnType<typeof guard>>, cycles = 0, hint: string | undefined;
   try {
     for (;;) {
-      draft = await write(voice, cls, clean, ctx, examples, hint);
-      verdict = await guard(voice, cls, clean, draft, ctx);
+      draft = await write(voice, cls, clean, ctx, examples, hint, { firstName, history: historyText });
+      verdict = await guard(voice, cls, clean, draft, ctx, historyText);
       if (verdict.verdict !== "reescrita" || cycles >= 2) break;
       cycles++; hint = verdict.rewrite_hint ?? verdict.reason;
     }
@@ -93,7 +107,10 @@ export async function POST(req: Request) {
     }).select("id").single();
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     conversationId = conv.id;
+  } else {
+    await sb.from("conversations").update({ last_activity: new Date().toISOString(), status: "aberta", ...(cls.uf ? { region_uf: cls.uf } : {}), ...(cls.city ? { region_city: cls.city } : {}) }).eq("id", conversationId);
   }
+  await sb.from("conversations").update({ summary: (cls.summary || clean).slice(0, 140) }).eq("id", conversationId);
   if (!messageId) {
     const { data: msg, error } = await sb.from("messages").insert({
       conversation_id: conversationId, brand_id: brandId, direction: "in", content: clean, scrub_report: s.report,
@@ -101,9 +118,10 @@ export async function POST(req: Request) {
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     messageId = msg.id;
   }
+  const storedDraft = firstName ? draft.replace(new RegExp(firstName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), "[nome]") : draft;
   const { count } = await admin.from("responses").select("*", { count: "exact", head: true }).eq("message_id", messageId);
   const { data: resp, error: rerr } = await admin.from("responses").insert({
-    message_id: messageId, brand_id: brandId, version: (count ?? 0) + 1, content: draft,
+    message_id: messageId, brand_id: brandId, version: (count ?? 0) + 1, content: storedDraft,
     sources: { product_ids: P_.map((p) => p.id), distributor_ids: D_.map((d) => d.id), chunk_ids: C_.map((c) => c.chunk_id) },
     classifier_out: cls, verdict: verdict.verdict, verdict_reason: verdict.reason, rewrite_cycles: cycles,
     model: process.env.CLAUDE_MODEL ?? "claude-sonnet-5", latency_ms: Date.now() - t0,
