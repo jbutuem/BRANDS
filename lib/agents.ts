@@ -29,7 +29,7 @@ Regras: "risco" = saúde, alergia grave, intoxicação, menor de idade, ameaça,
 }
 
 /** 3. Redator — escreve como a marca. */
-export async function write(voice: BrandVoice, cls: Classification, message: string, context: string, examples: string, hint?: string) {
+export async function write(voice: BrandVoice, cls: Classification, message: string, context: string, examples: string, hint?: string, extra?: { firstName: string | null; history: string }) {
   const r = await client().messages.create({
     model: MODEL_MAIN, max_tokens: 700,
     system: `Você responde, em nome da marca ${voice.name}, mensagens de clientes e leads nas redes sociais (Instagram/Facebook/WhatsApp), em português do Brasil.
@@ -45,9 +45,11 @@ REGRAS DURAS:
 - Se a pessoa não disse a cidade/UF e a dúvida é onde comprar, pergunte a cidade de forma natural.
 - Se a mensagem é reclamação, acolha, não se justifique, e direcione para o canal certo.
 - Não repita a pergunta da pessoa. Máximo 6 linhas. Sem títulos, sem listas com marcadores.
-- Não mencione que existe um "contexto" nem que você é uma IA.`,
+- Não mencione que existe um "contexto" nem que você é uma IA.
+${extra?.firstName ? `- A pessoa se chama ${extra.firstName}: use o primeiro nome UMA vez, de forma natural (não em toda frase).` : "- Você não sabe o nome da pessoa: não invente nem use apelidos."}
+${extra?.history ? "- Esta é a CONTINUAÇÃO de um atendimento. Não se apresente de novo, não repita o que já foi dito e responda ao que a pessoa acabou de dizer, usando o que ela já informou antes." : ""}`,
     messages: [{ role: "user", content:
-`MENSAGEM DO CLIENTE (já anonimizada):
+`${extra?.history ? `HISTÓRICO DO ATENDIMENTO:\n${extra.history}\n\n` : ""}NOVA MENSAGEM DO CLIENTE (já anonimizada):
 ${message}
 
 CLASSIFICAÇÃO: ${JSON.stringify(cls)}
@@ -62,16 +64,16 @@ Escreva só a resposta final.` }],
 }
 
 /** 4. Guardião — tom de voz + segurança. */
-export function guard(voice: BrandVoice, cls: Classification, message: string, draft: string, context: string) {
+export function guard(voice: BrandVoice, cls: Classification, message: string, draft: string, context: string, history = "") {
   return json<Verdict>(MODEL_MAIN,
 `Você é o revisor final das respostas da marca ${voice.name} nas redes sociais. Responda SOMENTE com JSON válido:
 {"verdict":"aprovada|reescrita|escalar|bloqueada","reason":"motivo curto","escalate_to":"comercial|tecnico|sac|null","rewrite_hint":"instrução objetiva para o redator, se reescrita"}
 
 BLOQUEIE ou ESCALE se a resposta: dá orientação médica/nutricional individual; afirma sobre alergia/alérgeno algo que não está no contexto; fala de álcool para menor de idade; promete preço, prazo ou estoque; expõe dado pessoal; contém código/EAN/validade que não está no contexto; responde a uma reclamação séria ou pedido de indenização (→ escalar sac); pergunta técnica que o contexto não cobre (→ escalar tecnico); pedido comercial de grande volume, tabela de preço ou cadastro de distribuidor (→ escalar comercial).
-Peça REESCRITA se: tom robótico/corporativo, mais de 6 linhas, listas com marcadores, repete a pergunta, fere a persona/regras da marca, ou inventou dica sem base.
+Peça REESCRITA se: tom robótico/corporativo, se apresenta de novo em atendimento em andamento, ignora o histórico, mais de 6 linhas, listas com marcadores, repete a pergunta, fere a persona/regras da marca, ou inventou dica sem base.
 Regras extras da marca: ${voice.safety.join("; ") || "nenhuma"}.
 Persona: ${voice.persona || "próxima, direta, parceira do food service"}.`,
-`MENSAGEM: ${message}
+`${history ? `HISTÓRICO:\n${history}\n` : ""}MENSAGEM: ${message}
 CLASSIFICAÇÃO: ${JSON.stringify(cls)}
 CONTEXTO: ${context || "(vazio)"}
 RASCUNHO:
