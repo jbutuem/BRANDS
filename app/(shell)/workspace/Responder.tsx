@@ -6,7 +6,7 @@ import { Library } from "./Library";
 type Contact = { id: string; kind: string; name: string; email: string | null; whatsapp: string | null; phone: string | null; scope: string | null };
 type Result = {
   conversationId: string; messageId: string; responseId: string; version: number; text: string;
-  verdict: "aprovada" | "reescrita" | "redirecionar" | "escalar" | "bloqueada"; reason: string; escalateTo: string | null; contacts: Contact[];
+  verdict: "aprovada" | "reescrita" | "redirecionar" | "escalar" | "bloqueada" | "moderacao"; reason: string; escalateTo: string | null; contacts: Contact[];
   classification: { intent: string; uf: string | null; sentiment: string; summary: string; flags: string[]; surface: string };
   sources: { products: string[]; distributors: string[]; documents: string[] };
   scrub: Record<string, number>; cleanText: string; latencyMs: number;
@@ -65,8 +65,8 @@ export function Responder({ brandName }: { brandName: string }) {
   async function saveLabel() { if (conv) { await setLabel(conv.id, label); refreshOpen(); } }
 
   const scrubbed = res ? Object.values(res.scrub).reduce((a, b) => a + b, 0) : 0;
-  const badge = res ? ({ aprovada: ["#1b7f4b", "aprovada pelo guardião"], reescrita: ["#8a6d00", "reescrita e aprovada"], redirecionar: ["#0a4d8c", "direcionada para canal oficial"], escalar: ["#b3261e", "encaminhar — resposta de acolhimento"], bloqueada: ["#b3261e", "bloqueada — resposta de acolhimento"] } as Record<string, string[]>)[res.verdict] : null;
-  const FLAG: Record<string, string> = { ofensa: "ofensa", discurso_odio: "discurso de ódio", ameaca: "ameaça", crise: "sinal de crise", juridico: "jurídico", saude: "saúde", menor: "possível menor" };
+  const badge = res ? ({ aprovada: ["#1b7f4b", "aprovada pelo guardião"], reescrita: ["#8a6d00", "reescrita e aprovada"], redirecionar: ["#0a4d8c", "direcionada para canal oficial"], moderacao: ["#5b3a8c", "resposta de limite — moderação"], escalar: ["#b3261e", "encaminhar — resposta de acolhimento"], bloqueada: ["#b3261e", "bloqueada — resposta de acolhimento"] } as Record<string, string[]>)[res.verdict] : null;
+  const FLAG: Record<string, string> = { ofensa: "ofensa", discurso_odio: "discurso de ódio", sexismo: "machismo / sexualização", ameaca: "ameaça", crise: "sinal de crise", juridico: "jurídico", saude: "saúde", menor: "possível menor" };
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "240px 1fr 280px", gap: 16, alignItems: "start" }}>
@@ -130,6 +130,9 @@ export function Responder({ brandName }: { brandName: string }) {
               {scrubbed > 0 && <span className="muted">· {scrubbed} dado(s) pessoal(is) fora do banco</span>}
             </div>
             {res.classification.flags?.length > 0 && <p style={{ marginBottom: 10, padding: "8px 12px", background: "#fff4e5", borderRadius: 6, color: "#7a4a00" }}>⚠ Atenção: {res.classification.flags.map((f) => FLAG[f] ?? f).join(", ")}. {res.classification.flags.some((f) => ["crise", "ameaca", "juridico", "menor"].includes(f)) ? "Prioridade humana — avise o responsável antes de responder." : "Responda uma vez, com respeito, sem prolongar."}</p>}
+            {res.verdict === "moderacao" && <div style={{ marginBottom: 10, padding: "8px 12px", background: "#f1ecf8", borderRadius: 6, color: "#3d2566", fontSize: 14 }}>
+              <b>Como agir:</b> responda UMA vez com o limite abaixo (ou não responda) e modere o canal — {res.classification.surface === "comment" ? "no Instagram/Facebook, oculte o comentário (o autor não é avisado); se for discurso de ódio ou ameaça, denuncie." : "se a pessoa insistir, não responda mais e bloqueie/restrinja o perfil."} Nunca discuta, nunca cite a frase, nunca emende produto.
+            </div>}
             {res.verdict === "redirecionar" && <p className="muted" style={{ marginBottom: 10 }}>A informação não está na base, mas existe em canal oficial ({res.reason}). A resposta direciona para lá. Se subir esse material na Aprendizado, a próxima sai direta.</p>}
             {(res.verdict === "escalar" || res.verdict === "bloqueada") && <p className="error" style={{ marginBottom: 10 }}>O guardião não aprovou uma resposta direta ({res.reason}). Abaixo vai só o acolhimento e o encaminhamento — o assunto em si fica com {res.escalateTo ?? "a equipe responsável"}.</p>}
             <div style={{ whiteSpace: "pre-wrap", fontSize: 16, lineHeight: 1.55, padding: "4px 0 14px" }}>{res.text}</div>
