@@ -15,8 +15,10 @@ export default async function Aprendizado() {
     sb.from("internal_contacts").select("*", { count: "exact", head: true }).eq("brand_id", active!.id),
     sb.from("document_chunks").select("*", { count: "exact", head: true }).eq("brand_id", active!.id),
   ]);
+  // key={active.id}: ao trocar de marca, TODO estado de tela (resultados de busca,
+  // progresso de upload) é descartado. Nada de uma marca sobrevive na tela da outra.
   return (
-    <>
+    <div key={active!.id}>
       <h2>Aprendizado</h2>
       <p className="lede">Tudo que {active!.name} sabe fica aqui: catálogos, tabelas nutricionais, distribuidores por região e contatos internos para encaminhamento.</p>
 
@@ -32,7 +34,7 @@ export default async function Aprendizado() {
         <div className="panel">
           <h3>Enviar arquivo</h3>
           <p style={{ marginBottom: 12 }}>PDF, Word, PowerPoint, Excel ou texto. PDFs que são só imagem (como os catálogos) também funcionam: a leitura é feita página por página.</p>
-          <Uploader brandId={active!.id} brandSlug={active!.slug} />
+          <Uploader key={`up-${active!.id}`} brandId={active!.id} brandSlug={active!.slug} />
         </div>
       )}
 
@@ -47,10 +49,10 @@ export default async function Aprendizado() {
       </div>
 
       <div className="panel">
-        <h3>Testar o que a marca sabe</h3>
+        <h3>Testar o que {active!.name} sabe</h3>
         <p style={{ marginBottom: 12 }}>Faça uma pergunta como um cliente faria. É a mesma busca que o Redator vai usar.</p>
-        <SearchTest />
+        <SearchTest key={`search-${active!.id}`} brandName={active!.name} />
       </div>
-    </>
+    </div>
   );
 }
