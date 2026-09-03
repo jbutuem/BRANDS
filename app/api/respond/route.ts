@@ -4,12 +4,13 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { scrubRegex, scrubNames } from "@/lib/scrub";
 import { classify, write, guard, safeReply, type BrandVoice, type Classification } from "@/lib/agents";
 import { detectUf } from "@/lib/uf";
+import { detectCrisis } from "@/lib/policy";
 
 export const maxDuration = 120;
 export const runtime = "nodejs";
 
 /**
- * POST { text, channel, contactName?, conversationId?, messageId? }
+ * POST { text, channel, surface?, contactName?, conversationId?, messageId? }
  * Pipeline: Scrubber → Classificador → Retriever → Redator → Guardião (máx. 2 ciclos).
  * brand_id vem SEMPRE da sessão. Texto bruto e nome nunca são gravados.
  */
@@ -34,6 +35,9 @@ export async function POST(req: Request) {
   const clean = scrubNames(s.text, namesToMask, s.report);
   cls.personal_names = []; // não persiste nomes nem na classificação
   if (!cls.uf) cls.uf = detectUf(clean);
+  const surface: "dm" | "comment" = body.surface === "comment" ? "comment" : "dm";
+  cls.flags = [...new Set([...(cls.flags ?? []), ...(detectCrisis(clean) ? ["crise" as const] : [])])];
+  const severe = (cls.flags ?? []).some((f) => f === "ameaca" || f === "crise" || f === "juridico" || f === "menor");
 
   // Histórico do atendimento (já anonimizado) — permite continuar a conversa
   let history: { direction: string; content: string }[] = [];
@@ -86,17 +90,19 @@ export async function POST(req: Request) {
   }
 
   // 3+4. Redator ↔ Guardião (máx. 2 reescritas)
-  let draft = "", verdict = { verdict: "aprovada" as const, reason: "" } as Awaited<ReturnType<typeof guard>>, cycles = 0, hint: string | undefined;
+  let draft = "", verdict: Awaited<ReturnType<typeof guard>> = { verdict: "aprovada", reason: "" }, cycles = 0, hint: string | undefined;
   try {
     for (;;) {
-      draft = await write(voice, cls, clean, ctx, examples, hint, { firstName, history: historyText });
-      verdict = await guard(voice, cls, clean, draft, ctx, historyText);
+      draft = await write(voice, cls, clean, ctx, examples, hint, { firstName, history: historyText, surface });
+      verdict = await guard(voice, cls, clean, draft, ctx, historyText, surface);
+      // Sinal de crise/ameaça/jurídico/menor: nunca sai resposta direta — vai para o SAC com acolhimento neutro.
+      if (severe && verdict.verdict !== "bloqueada") { verdict = { verdict: "escalar", reason: `sinal sensível: ${(cls.flags ?? []).join(", ")}`, escalate_to: "sac" }; break; }
       if (verdict.verdict !== "reescrita" || cycles >= 2) break;
       cycles++; hint = verdict.rewrite_hint ?? verdict.reason;
     }
-    // Reprovado pelo Guardião: o rascunho é descartado e o operador recebe uma resposta segura de acolhimento/encaminhamento.
-    if (verdict.verdict === "escalar" || verdict.verdict === "bloqueada") {
-      draft = await safeReply(voice, cls, clean, verdict.reason, verdict.escalate_to ?? null, P_.length ? P_.map((p) => `- ${p.name} (${p.line ?? ""}, ${p.packaging ?? ""})`).join("\n") : "", { firstName, history: historyText });
+    // Reprovado ou redirecionado pelo Guardião: o rascunho é descartado e sai uma resposta segura.
+    if (verdict.verdict === "escalar" || verdict.verdict === "bloqueada" || verdict.verdict === "redirecionar") {
+      draft = await safeReply(voice, cls, clean, verdict.reason, verdict.escalate_to ?? null, P_.length ? P_.map((p) => `- ${p.name} (${p.line ?? ""}, ${p.packaging ?? ""})`).join("\n") : "", { firstName, history: historyText, surface, mode: verdict.verdict });
     }
   } catch (e) {
     return NextResponse.json({ error: `IA indisponível: ${e instanceof Error ? e.message : e}` }, { status: 502 });
@@ -107,12 +113,12 @@ export async function POST(req: Request) {
   let messageId: string = body.messageId ?? "";
   if (!conversationId) {
     const { data: conv, error } = await sb.from("conversations").insert({
-      brand_id: brandId, channel: body.channel ?? "instagram", intent: cls.intent, region_uf: cls.uf, region_city: cls.city, operator_id: user.id,
+      brand_id: brandId, channel: body.channel ?? "instagram", intent: cls.intent, region_uf: cls.uf, region_city: cls.city, operator_id: user.id, surface, flags: cls.flags ?? [],
     }).select("id").single();
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     conversationId = conv.id;
   } else {
-    await sb.from("conversations").update({ last_activity: new Date().toISOString(), status: "aberta", ...(cls.uf ? { region_uf: cls.uf } : {}), ...(cls.city ? { region_city: cls.city } : {}) }).eq("id", conversationId);
+    await sb.from("conversations").update({ last_activity: new Date().toISOString(), status: "aberta", flags: cls.flags ?? [], ...(cls.uf ? { region_uf: cls.uf } : {}), ...(cls.city ? { region_city: cls.city } : {}) }).eq("id", conversationId);
   }
   await sb.from("conversations").update({ summary: (cls.summary || clean).slice(0, 140) }).eq("id", conversationId);
   if (!messageId) {
@@ -136,7 +142,7 @@ export async function POST(req: Request) {
   return NextResponse.json({
     conversationId, messageId, responseId: resp.id, version: resp.version,
     text: draft, verdict: verdict.verdict, reason: verdict.reason, escalateTo: verdict.escalate_to ?? null, contacts: esc,
-    classification: { intent: cls.intent, uf: cls.uf, sentiment: cls.sentiment, summary: cls.summary },
+    classification: { intent: cls.intent, uf: cls.uf, sentiment: cls.sentiment, summary: cls.summary, flags: cls.flags ?? [], surface },
     sources: { products: P_.map((p) => p.name), distributors: D_.map((d) => d.fantasia), documents: [...new Set(C_.map((c) => c.document_name))] },
     scrub: s.report, cleanText: clean, latencyMs: Date.now() - t0,
   });
