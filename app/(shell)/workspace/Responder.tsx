@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { listOpen, loadThread, closeConversation, setLabel, type OpenConv, type Msg } from "./actions";
+import { Library } from "./Library";
 
 type Contact = { id: string; kind: string; name: string; email: string | null; whatsapp: string | null; phone: string | null; scope: string | null };
 type Result = {
@@ -66,7 +67,7 @@ export function Responder({ brandName }: { brandName: string }) {
   const badge = res ? ({ aprovada: ["#1b7f4b", "aprovada pelo guardião"], reescrita: ["#8a6d00", "reescrita e aprovada"], escalar: ["#b3261e", "encaminhar"], bloqueada: ["#b3261e", "bloqueada"] } as Record<string, string[]>)[res.verdict] : null;
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", gap: 16, alignItems: "start" }}>
+    <div style={{ display: "grid", gridTemplateColumns: "240px 1fr 280px", gap: 16, alignItems: "start" }}>
       {/* Atendimentos abertos */}
       <aside className="panel" style={{ margin: 0 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
@@ -151,6 +152,8 @@ export function Responder({ brandName }: { brandName: string }) {
           </div>
         )}
       </div>
+
+      <Library name={name} />
     </div>
   );
 }
