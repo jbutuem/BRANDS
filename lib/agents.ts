@@ -41,6 +41,8 @@ ${voice.signature ? `ASSINATURA: termine com "${voice.signature}"` : ""}
 
 REGRAS DURAS:
 - Só afirme código, validade, peso, EAN, rendimento, ingredientes e alérgenos que estejam no CONTEXTO abaixo. Se não estiver, diga que vai confirmar.
+- Use SOMENTE nomes de produto que existam no CONTEXTO. Se o cliente escreveu o nome errado ou abreviado (ex.: "griu", "maionese grio"), use o nome correto da base naturalmente, sem corrigir a pessoa e sem repetir o nome errado. Se nenhum produto da base corresponder, diga que não identificou o produto e pergunte qual é.
+- NUNCA garanta que um produto "não faz mal", "é seguro", "pode consumir" ou dê qualquer garantia de saúde, mesmo em tom leve. Para perguntas de segurança alimentar, alergia, gestante, criança ou mal-estar: acolha, informe só o que está no rótulo/contexto (validade, conservação, ingredientes) e direcione ao SAC. Se houver relato de problema com o produto, peça lote e validade e encaminhe.
 - Nunca dê orientação médica ou nutricional individual; nunca prometa preço, prazo de entrega ou disponibilidade.
 - Se a pessoa não disse a cidade/UF e a dúvida é onde comprar, pergunte a cidade de forma natural.
 - Se a mensagem é reclamação, acolha, não se justifique, e direcione para o canal certo.
@@ -63,13 +65,26 @@ Escreva só a resposta final.` }],
   return r.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("").trim();
 }
 
+/** 3b. Resposta segura — usada quando o Guardião decide escalar/bloquear: acolhe e direciona, sem afirmar nada de risco. */
+export async function safeReply(voice: BrandVoice, cls: Classification, message: string, reason: string, escalateTo: string | null, extra?: { firstName: string | null; history: string }) {
+  const r = await client().messages.create({
+    model: MODEL_MAIN, max_tokens: 400,
+    system: `Você responde em nome da marca ${voice.name}, em português do Brasil. PERSONA: ${voice.persona || "próxima, direta, parceira do food service"}.
+Esta mensagem foi marcada pelo revisor como "${escalateTo ? "encaminhar para " + escalateTo : "bloqueada"}" pelo motivo: ${reason}.
+Escreva uma resposta curta (até 4 linhas) que: acolhe a pessoa; NÃO afirma nada sobre segurança, saúde, alergia, preço, prazo ou estoque; NÃO promete resultado; diz que vai passar para ${escalateTo === "sac" ? "o atendimento ao consumidor" : escalateTo === "tecnico" ? "o time técnico" : escalateTo === "comercial" ? "o time comercial" : "a equipe responsável"} e, se fizer sentido, pede a informação necessária para isso (lote e validade em caso de problema com produto; cidade e tipo de negócio em caso comercial). Sem listas, sem títulos, máximo 1 emoji.
+${extra?.firstName ? `A pessoa se chama ${extra.firstName}; use o primeiro nome uma vez.` : "Não use nome."}${voice.signature ? ` Termine com "${voice.signature}".` : ""}`,
+    messages: [{ role: "user", content: `${extra?.history ? `HISTÓRICO:\n${extra.history}\n\n` : ""}MENSAGEM: ${message}\nCLASSIFICAÇÃO: ${JSON.stringify(cls)}\nEscreva só a resposta.` }],
+  });
+  return r.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("").trim();
+}
+
 /** 4. Guardião — tom de voz + segurança. */
 export function guard(voice: BrandVoice, cls: Classification, message: string, draft: string, context: string, history = "") {
   return json<Verdict>(MODEL_MAIN,
 `Você é o revisor final das respostas da marca ${voice.name} nas redes sociais. Responda SOMENTE com JSON válido:
 {"verdict":"aprovada|reescrita|escalar|bloqueada","reason":"motivo curto","escalate_to":"comercial|tecnico|sac|null","rewrite_hint":"instrução objetiva para o redator, se reescrita"}
 
-BLOQUEIE ou ESCALE se a resposta: dá orientação médica/nutricional individual; afirma sobre alergia/alérgeno algo que não está no contexto; fala de álcool para menor de idade; promete preço, prazo ou estoque; expõe dado pessoal; contém código/EAN/validade que não está no contexto; responde a uma reclamação séria ou pedido de indenização (→ escalar sac); pergunta técnica que o contexto não cobre (→ escalar tecnico); pedido comercial de grande volume, tabela de preço ou cadastro de distribuidor (→ escalar comercial).
+BLOQUEIE ou ESCALE se a resposta: garante que o produto "não faz mal"/"é seguro"/"pode consumir" (qualquer garantia de saúde, mesmo em tom leve); usa nome de produto que não existe no contexto (ex.: repete um nome digitado errado pelo cliente); dá orientação médica/nutricional individual; afirma sobre alergia/alérgeno algo que não está no contexto; fala de álcool para menor de idade; promete preço, prazo ou estoque; expõe dado pessoal; contém código/EAN/validade que não está no contexto; responde a uma reclamação séria ou pedido de indenização (→ escalar sac); pergunta técnica que o contexto não cobre (→ escalar tecnico); pedido comercial de grande volume, tabela de preço ou cadastro de distribuidor (→ escalar comercial).
 Peça REESCRITA se: tom robótico/corporativo, se apresenta de novo em atendimento em andamento, ignora o histórico, mais de 6 linhas, listas com marcadores, repete a pergunta, fere a persona/regras da marca, ou inventou dica sem base.
 Regras extras da marca: ${voice.safety.join("; ") || "nenhuma"}.
 Persona: ${voice.persona || "próxima, direta, parceira do food service"}.`,
