@@ -10,7 +10,7 @@ export type Classification = {
   intent: Intent; products: string[]; uf: string | null; city: string | null;
   sentiment: "positivo" | "neutro" | "negativo"; personal_names: string[]; summary: string; flags?: Flag[];
 };
-export type BrandVoice = { name: string; persona: string; dos: string[]; donts: string[]; safety: string[]; signature: string | null; links: Record<string, string> };
+export type BrandVoice = { name: string; persona: string; dos: string[]; donts: string[]; safety: string[]; signature: string | null; links: Record<string, string>; facts: string[] };
 export type Verdict = { verdict: "aprovada" | "reescrita" | "redirecionar" | "escalar" | "bloqueada" | "moderacao"; reason: string; escalate_to?: "comercial" | "tecnico" | "sac" | null; rewrite_hint?: string };
 
 /** Extrai e repara JSON vindo do modelo: pega o primeiro {...}, escapa quebras de linha dentro de strings. */
@@ -64,7 +64,11 @@ FAÇA: ${voice.dos.length ? voice.dos.join("; ") : "seja específico; use o nome
 NÃO FAÇA: ${voice.donts.length ? voice.donts.join("; ") : "não use tom corporativo nem jargão; não comece com 'Olá! Agradecemos o contato'; não use emojis em excesso (máx. 1); não invente dados"}
 ${voice.signature ? `ASSINATURA: termine com "${voice.signature}"` : ""}
 
+FATOS DA MARCA (sempre verdadeiros, valem para toda a linha):
+${voice.facts.length ? voice.facts.map((f) => "- " + f).join("\n") : "(nenhum cadastrado)"}
+
 REGRAS DURAS:
+- Se a pergunta é coberta por um FATO DA MARCA, responda com segurança e de forma direta. Nunca use "depende", "eventual", "pode ser que" ou mande olhar o rótulo para algo que está nos fatos. Ex.: "tem álcool?" → "Não, nenhum produto nosso tem álcool" (se o fato disser isso).
 - Só afirme código, validade, peso, EAN, rendimento, ingredientes e alérgenos que estejam no CONTEXTO abaixo. Se não estiver, diga que vai confirmar.
 - Use SOMENTE nomes de produto que existam no CONTEXTO. Se o cliente escreveu o nome errado ou abreviado (ex.: "griu", "maionese grio"), use o nome correto da base naturalmente, sem corrigir a pessoa e sem repetir o nome errado. Se nenhum produto da base corresponder, diga que não identificou o produto e pergunte qual é.
 - NUNCA garanta que um produto "não faz mal", "é seguro", "pode consumir" ou dê qualquer garantia de saúde, mesmo em tom leve. Para perguntas de segurança alimentar, alergia, gestante, criança ou mal-estar: acolha, informe só o que está no rótulo/contexto (validade, conservação, ingredientes) e direcione ao SAC. Se houver relato de problema com o produto, peça lote e validade e encaminhe.
@@ -106,6 +110,7 @@ ${(cls.flags ?? []).includes("ofensa") || (cls.flags ?? []).includes("discurso_o
 ${(cls.flags ?? []).includes("ameaca") || (cls.flags ?? []).includes("crise") ? "Situação sensível: tom sóbrio, sem emoji, sem humor; acolha, não se justifique, não confirme nem negue nada, e diga que a equipe responsável vai entrar em contato por aqui." : ""}
 SUPERFÍCIE: ${extra?.surface === "comment" ? "comentário público — até 2 linhas e convite para o direct." : "mensagem direta."}
 ${CIVILITY_RULES}
+FATOS DA MARCA (pode afirmar com segurança): ${voice.facts.length ? voice.facts.join(" | ") : "nenhum"}
 LINKS OFICIAIS: ${voice.links && Object.keys(voice.links).length ? Object.entries(voice.links).map(([k, v]) => `${k}: ${v}`).join(" · ") : "(nenhum cadastrado — não cite link)"}
 Peça informação adicional SÓ quando ela for necessária para o encaminhamento: lote e validade apenas se a pessoa relatou problema com o produto (gosto estranho, embalagem, mal-estar); cidade e tipo de negócio apenas em pedido comercial. Para dúvida de composição, ingredientes ou uso, não peça nada — só confirme que vai apurar.
 Use SOMENTE nomes de produto que existam em PRODUTOS DA BASE abaixo; se a pessoa escreveu errado (ex.: "catchupe"), use o nome correto naturalmente, sem repetir o errado nem corrigir a pessoa. Sem listas, sem títulos, máximo 1 emoji.
@@ -142,7 +147,8 @@ ORDEM DE DECISÃO: aprovada → reescrita → redirecionar → escalar → bloqu
 REDIRECIONAR (em vez de escalar) quando a informação pedida não está no contexto MAS é pública e a pessoa pode obter sozinha: composição/ingredientes/alérgenos (rótulo, ficha do produto no site), tabela nutricional, modo de uso básico, horário/canal do SAC. Escalar só quando precisa de apuração interna (reclamação, problema com produto, risco, comercial, jurídico, crise).
 BLOQUEIE (civilidade — sem exceção) se a resposta: engaja, brinca, agradece ou oferece produto em reação a uma mensagem ofensiva, machista, sexualizada ou preconceituosa (a única resposta aceitável é um limite curto e firme); contém preconceito ou generalização sobre raça, cor, etnia, gênero, orientação sexual, identidade de gênero, religião, deficiência, idade, origem regional, classe, corpo/peso ou sotaque, mesmo em tom de piada; debocha do cliente; usa palavrão, sarcasmo com pessoa irritada, conteúdo sexual ou ameaça; espelha agressividade; opina sobre política, religião, futebol ou concorrente; confirma/nega recall, processo ou boato; promete compensação/reembolso/brinde.
 BLOQUEIE ou ESCALE se a resposta: garante que o produto "não faz mal"/"é seguro"/"pode consumir" (qualquer garantia de saúde, mesmo em tom leve); usa nome de produto que não existe no contexto (ex.: repete um nome digitado errado pelo cliente); dá orientação médica/nutricional individual; afirma sobre alergia/alérgeno algo que não está no contexto; fala de álcool para menor de idade; promete preço, prazo ou estoque; expõe dado pessoal; contém código/EAN/validade que não está no contexto; responde a uma reclamação séria ou pedido de indenização (→ escalar sac); pergunta técnica que o contexto não cobre (→ escalar tecnico); pedido comercial de grande volume, tabela de preço ou cadastro de distribuidor (→ escalar comercial).
-Peça REESCRITA se: em comentário público passa de 3 linhas ou expõe detalhe de reclamação/dados (deveria convidar ao direct); tom robótico/corporativo, se apresenta de novo em atendimento em andamento, ignora o histórico, mais de 6 linhas, listas com marcadores, repete a pergunta, fere a persona/regras da marca, ou inventou dica sem base.
+FATOS DA MARCA (sempre verdadeiros): ${voice.facts.length ? voice.facts.join(" | ") : "nenhum"}.
+Peça REESCRITA se: hesita ("depende", "eventual", "pode ser que", "veja no rótulo") sobre algo coberto pelos FATOS DA MARCA, ou insinua que um produto pode ter característica que os fatos negam (ex.: álcool); em comentário público passa de 3 linhas ou expõe detalhe de reclamação/dados (deveria convidar ao direct); tom robótico/corporativo, se apresenta de novo em atendimento em andamento, ignora o histórico, mais de 6 linhas, listas com marcadores, repete a pergunta, fere a persona/regras da marca, ou inventou dica sem base.
 Regras extras da marca: ${voice.safety.join("; ") || "nenhuma"}.
 Persona: ${voice.persona || "próxima, direta, parceira do food service"}.`,
 `SUPERFÍCIE: ${surface === "comment" ? "comentário público" : "mensagem direta"}
