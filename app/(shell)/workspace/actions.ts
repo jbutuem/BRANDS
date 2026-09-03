@@ -28,3 +28,21 @@ export async function setLabel(conversationId: string, label: string) {
   const { sb } = await getSession();
   await sb.from("conversations").update({ label: label.trim().slice(0, 60) || null }).eq("id", conversationId);
 }
+
+export type QuickReply = { id: string; category: string; text: string };
+
+/** Biblioteca de respostas prontas: sorteio diário determinístico + sazonais no período. */
+export async function listQuickReplies(): Promise<QuickReply[]> {
+  const { sb, active } = await getSession();
+  const { data } = await sb.from("quick_replies").select("id, category, text, season_from, season_to").eq("brand_id", active!.id).eq("is_active", true);
+  const today = new Date();
+  const mmdd = `${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  const inSeason = (f: string | null, t: string | null) => !f || !t ? true : (f <= t ? (mmdd >= f && mmdd <= t) : (mmdd >= f || mmdd <= t));
+  // semente = marca + data → ordem muda todo dia, mas é estável durante o dia
+  const seedStr = `${active!.id}-${today.toISOString().slice(0, 10)}`;
+  let h = 2166136261; for (const ch of seedStr) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
+  const rnd = () => { h ^= h << 13; h ^= h >>> 17; h ^= h << 5; return ((h >>> 0) % 100000) / 100000; };
+  return (data ?? []).filter((q) => inSeason(q.season_from, q.season_to))
+    .map((q) => ({ id: q.id, category: q.category, text: q.text, r: rnd() }))
+    .sort((a, b) => a.r - b.r).map(({ id, category, text }) => ({ id, category, text }));
+}
