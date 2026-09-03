@@ -2,12 +2,14 @@
 import { useEffect, useState } from "react";
 import { listOpen, loadThread, closeConversation, setLabel, type OpenConv, type Msg } from "./actions";
 import { Library } from "./Library";
+import { LeadCard } from "./LeadCard";
 
 type Contact = { id: string; kind: string; name: string; email: string | null; whatsapp: string | null; phone: string | null; scope: string | null };
 type Result = {
   conversationId: string; messageId: string; responseId: string; version: number; text: string;
   verdict: "aprovada" | "reescrita" | "redirecionar" | "escalar" | "bloqueada" | "moderacao"; reason: string; escalateTo: string | null; contacts: Contact[];
-  classification: { intent: string; uf: string | null; sentiment: string; summary: string; flags: string[]; surface: string };
+  classification: { intent: string; uf: string | null; city: string | null; sentiment: string; summary: string; flags: string[]; surface: string; audience: string; businessType: string | null; businessName: string | null; leadSignals: string[]; products: string[] };
+  commercial?: Contact[];
   sources: { products: string[]; distributors: string[]; documents: string[] };
   scrub: Record<string, number>; cleanText: string; latencyMs: number;
 };
@@ -126,6 +128,8 @@ export function Responder({ brandName }: { brandName: string }) {
           <div className="panel" style={{ borderLeft: `4px solid ${badge![0]}` }}>
             <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
               <span style={{ color: badge![0], fontWeight: 600 }}>{badge![1]}</span>
+              {res.classification.audience === "b2b" && <span style={{ background: "#1b7f4b", color: "#fff", borderRadius: 999, padding: "2px 10px", fontSize: 12, fontWeight: 600 }}>B2B{res.classification.businessType ? ` · ${res.classification.businessType}` : ""}</span>}
+              {res.classification.audience === "b2c" && <span style={{ background: "var(--paper)", borderRadius: 999, padding: "2px 10px", fontSize: 12 }}>consumidor</span>}
               <span className="muted">· {INTENT[res.classification.intent] ?? res.classification.intent}{res.classification.uf ? ` · ${res.classification.uf}` : ""} · v{res.version} · {(res.latencyMs / 1000).toFixed(1)}s</span>
               {scrubbed > 0 && <span className="muted">· {scrubbed} dado(s) pessoal(is) fora do banco</span>}
             </div>
@@ -160,6 +164,11 @@ export function Responder({ brandName }: { brandName: string }) {
               </div>
             </details>
           </div>
+        )}
+        {res && res.classification.audience === "b2b" && res.verdict !== "moderacao" && (
+          <LeadCard key={res.conversationId} brandName={brandName} conversationId={res.conversationId} channel={channel}
+            prefill={{ businessType: res.classification.businessType, businessName: res.classification.businessName, city: res.classification.city, uf: res.classification.uf, products: res.classification.products, leadSignals: res.classification.leadSignals, summary: res.classification.summary }}
+            commercial={res.commercial ?? []} />
         )}
       </div>
 
