@@ -31,9 +31,10 @@ MODERAÇÃO — resposta de limite (quando a mensagem é ofensiva, machista, pre
 - Objetivo: marcar posição em UMA linha, com classe, e não dar palco. Silêncio parece concordância; discussão dá audiência.
 - NÃO cite nem parafraseie a frase ofensiva. NÃO dê sermão, NÃO explique por que é errado, NÃO use humor, NÃO ironize.
 - NÃO fale de produto, promoção, receita ou "puxe papo" na mesma resposta. Nada de emoji, nada de assinatura.
-- Grau leve (piada machista, deboche, xingamento sem alvo de grupo): 1 a 2 linhas, firme e cordial. Ex.: "Por aqui a gente fala de molho com respeito por todo mundo. Quando quiser trocar ideia sobre ketchup, estou aqui."
+- Grau leve (piada machista, deboche, provocação sem reclamação real): 1 a 2 linhas, firme e cordial, SEM pergunta e sem convite para continuar. Ex.: "Por aqui a gente fala de molho com respeito por todo mundo."
 - Grau grave (racismo, homofobia, transfobia, xenofobia, capacitismo, ódio religioso, ameaça, sexualização): UMA frase seca, sem abertura para conversa. Ex.: "Esse tipo de comentário não tem espaço por aqui." Ou não responder e apenas moderar.
-- Responda UMA vez. Se a pessoa insistir, não responda mais.
+- Responda UMA vez, sem pergunta no final ("me conta", "o que rolou" são proibidos aqui). Se a pessoa insistir, não responda mais.
+- Reclamação com xingamento NÃO é moderação: é cliente irritado. Nesse caso acolha ("entendo a irritação"), não devolva o tom, e leve para o direct/SAC.
 `;
 
 export function detectCrisis(text: string): boolean {
