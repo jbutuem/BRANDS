@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { COMMUNITY_RULES, CIVILITY_RULES, type Flag } from "./policy";
 
 const client = () => new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 export const MODEL_FAST = process.env.CLAUDE_MODEL_FAST ?? "claude-haiku-4-5-20251001";
@@ -7,10 +8,10 @@ export const MODEL_MAIN = process.env.CLAUDE_MODEL ?? "claude-sonnet-5";
 export type Intent = "produto" | "onde_comprar" | "tecnica" | "engajamento" | "reclamacao" | "risco" | "outro";
 export type Classification = {
   intent: Intent; products: string[]; uf: string | null; city: string | null;
-  sentiment: "positivo" | "neutro" | "negativo"; personal_names: string[]; summary: string;
+  sentiment: "positivo" | "neutro" | "negativo"; personal_names: string[]; summary: string; flags?: Flag[];
 };
 export type BrandVoice = { name: string; persona: string; dos: string[]; donts: string[]; safety: string[]; signature: string | null; links: Record<string, string> };
-export type Verdict = { verdict: "aprovada" | "reescrita" | "escalar" | "bloqueada"; reason: string; escalate_to?: "comercial" | "tecnico" | "sac" | null; rewrite_hint?: string };
+export type Verdict = { verdict: "aprovada" | "reescrita" | "redirecionar" | "escalar" | "bloqueada"; reason: string; escalate_to?: "comercial" | "tecnico" | "sac" | null; rewrite_hint?: string };
 
 async function json<T>(model: string, system: string, user: string, max = 1200): Promise<T> {
   const r = await client().messages.create({ model, max_tokens: max, system, messages: [{ role: "user", content: user }] });
@@ -23,13 +24,14 @@ async function json<T>(model: string, system: string, user: string, max = 1200):
 export function classify(brand: string, text: string) {
   return json<Classification>(MODEL_FAST,
 `Você classifica mensagens recebidas nas redes sociais da marca ${brand} (food service, Brasil). Responda SOMENTE com JSON válido, sem comentários:
-{"intent":"produto|onde_comprar|tecnica|engajamento|reclamacao|risco|outro","products":["nomes de produtos citados"],"uf":"UF em 2 letras ou null","city":"cidade ou null","sentiment":"positivo|neutro|negativo","personal_names":["nomes de PESSOAS citados no texto, nunca marcas ou produtos"],"summary":"o que a pessoa quer, em uma frase"}
-Regras: "risco" = saúde, alergia grave, intoxicação, menor de idade, ameaça, pedido de dado pessoal. "reclamacao" = produto com defeito, atraso, atendimento ruim. "tecnica" = como usar, rendimento, conservação, tabela nutricional, alérgenos.`,
+{"intent":"produto|onde_comprar|tecnica|engajamento|reclamacao|risco|outro","products":["nomes de produtos citados"],"uf":"UF em 2 letras ou null","city":"cidade ou null","sentiment":"positivo|neutro|negativo","personal_names":["nomes de PESSOAS citados no texto, nunca marcas ou produtos"],"summary":"o que a pessoa quer, em uma frase","flags":["zero ou mais de: ofensa, discurso_odio, ameaca, crise, juridico, saude, menor"]}
+Regras: "risco" = saúde, alergia grave, intoxicação, menor de idade, ameaça, pedido de dado pessoal. "reclamacao" = produto com defeito, atraso, atendimento ruim. "tecnica" = como usar, rendimento, conservação, tabela nutricional, alérgenos.
+Flags: "ofensa" = xingamento/deboche dirigido à marca ou equipe; "discurso_odio" = preconceito ou ataque a grupo (raça, gênero, orientação, religião, deficiência, região, corpo); "ameaca" = ameaça a pessoas ou à marca; "crise" = menção a Procon, advogado, processo, imprensa, expor/viralizar, Anvisa, intoxicação, mal-estar, corpo estranho, produto vencido/estufado, recall, boicote; "juridico" = pedido de indenização/compensação; "saude" = pergunta de segurança alimentar/alergia/gestante/criança; "menor" = indícios de menor de idade.`,
     text);
 }
 
 /** 3. Redator — escreve como a marca. */
-export async function write(voice: BrandVoice, cls: Classification, message: string, context: string, examples: string, hint?: string, extra?: { firstName: string | null; history: string }) {
+export async function write(voice: BrandVoice, cls: Classification, message: string, context: string, examples: string, hint?: string, extra?: { firstName: string | null; history: string; surface?: "dm" | "comment" }) {
   const r = await client().messages.create({
     model: MODEL_MAIN, max_tokens: 700,
     system: `Você responde, em nome da marca ${voice.name}, mensagens de clientes e leads nas redes sociais (Instagram/Facebook/WhatsApp), em português do Brasil.
@@ -48,6 +50,9 @@ REGRAS DURAS:
 - Se a mensagem é reclamação, acolha, não se justifique, e direcione para o canal certo.
 - Não repita a pergunta da pessoa. Máximo 6 linhas. Sem títulos, sem listas com marcadores.
 - Não mencione que existe um "contexto" nem que você é uma IA.
+- SUPERFÍCIE: ${extra?.surface === "comment" ? "COMENTÁRIO PÚBLICO — até 3 linhas, sem dados, sem detalhes de reclamação; convide para o direct quando precisar aprofundar." : "MENSAGEM DIRETA (privada)."}
+${COMMUNITY_RULES}
+${CIVILITY_RULES}
 ${extra?.firstName ? `- A pessoa se chama ${extra.firstName}: use o primeiro nome UMA vez, de forma natural (não em toda frase).` : "- Você não sabe o nome da pessoa: não invente nem use apelidos."}
 ${extra?.history ? "- Esta é a CONTINUAÇÃO de um atendimento. Não se apresente de novo, não repita o que já foi dito e responda ao que a pessoa acabou de dizer, usando o que ela já informou antes." : ""}`,
     messages: [{ role: "user", content:
@@ -65,13 +70,20 @@ Escreva só a resposta final.` }],
   return r.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("").trim();
 }
 
-/** 3b. Resposta segura — usada quando o Guardião decide escalar/bloquear: acolhe e direciona, sem afirmar nada de risco. */
-export async function safeReply(voice: BrandVoice, cls: Classification, message: string, reason: string, escalateTo: string | null, context: string, extra?: { firstName: string | null; history: string }) {
+/** 3b. Resposta segura — usada quando o Guardião decide redirecionar/escalar/bloquear: acolhe e direciona, sem afirmar nada de risco. */
+export async function safeReply(voice: BrandVoice, cls: Classification, message: string, reason: string, escalateTo: string | null, context: string, extra?: { firstName: string | null; history: string; surface?: "dm" | "comment"; mode?: "escalar" | "redirecionar" | "bloqueada" }) {
   const r = await client().messages.create({
     model: MODEL_MAIN, max_tokens: 400,
     system: `Você responde em nome da marca ${voice.name}, em português do Brasil. PERSONA: ${voice.persona || "próxima, direta, parceira do food service"}.
-Esta mensagem foi marcada pelo revisor como "${escalateTo ? "encaminhar para " + escalateTo : "bloqueada"}" pelo motivo: ${reason}.
-Escreva uma resposta curta (até 4 linhas) que: acolhe a pessoa; NÃO afirma nada sobre segurança, saúde, alergia, composição, preço, prazo ou estoque; NÃO promete resultado; diz que vai passar para ${escalateTo === "sac" ? "o atendimento ao consumidor" : escalateTo === "tecnico" ? "o time técnico" : escalateTo === "comercial" ? "o time comercial" : "a equipe responsável"} e que retorna aqui.
+Esta mensagem foi marcada pelo revisor como "${extra?.mode === "redirecionar" ? "direcionar para canal oficial" : escalateTo ? "encaminhar para " + escalateTo : "bloqueada"}" pelo motivo: ${reason}.
+${extra?.mode === "redirecionar"
+  ? `Escreva uma resposta curta (até 4 linhas) que: acolhe a pessoa; NÃO afirma nada sobre composição, segurança, saúde, preço, prazo ou estoque; aponta o CANAL OFICIAL onde a informação está (rótulo da embalagem, ficha do produto no site/FAQ, SAC) usando os LINKS OFICIAIS abaixo; e se oferece para confirmar por aqui se a pessoa preferir. Sem inventar link.`
+  : `Escreva uma resposta curta (até 4 linhas) que: acolhe a pessoa; NÃO afirma nada sobre segurança, saúde, alergia, composição, preço, prazo ou estoque; NÃO promete resultado; diz que vai passar para ${escalateTo === "sac" ? "o atendimento ao consumidor" : escalateTo === "tecnico" ? "o time técnico" : escalateTo === "comercial" ? "o time comercial" : "a equipe responsável"} e que retorna aqui.`}
+${(cls.flags ?? []).includes("ofensa") || (cls.flags ?? []).includes("discurso_odio") ? "A mensagem recebida é ofensiva: responda UMA vez, curta e firme, sem devolver ofensa (ex.: 'Por aqui a gente conversa com respeito. Se quiser resolver, estou à disposição.')." : ""}
+${(cls.flags ?? []).includes("ameaca") || (cls.flags ?? []).includes("crise") ? "Situação sensível: tom sóbrio, sem emoji, sem humor; acolha, não se justifique, não confirme nem negue nada, e diga que a equipe responsável vai entrar em contato por aqui." : ""}
+SUPERFÍCIE: ${extra?.surface === "comment" ? "comentário público — até 2 linhas e convite para o direct." : "mensagem direta."}
+${CIVILITY_RULES}
+LINKS OFICIAIS: ${voice.links && Object.keys(voice.links).length ? Object.entries(voice.links).map(([k, v]) => `${k}: ${v}`).join(" · ") : "(nenhum cadastrado — não cite link)"}
 Peça informação adicional SÓ quando ela for necessária para o encaminhamento: lote e validade apenas se a pessoa relatou problema com o produto (gosto estranho, embalagem, mal-estar); cidade e tipo de negócio apenas em pedido comercial. Para dúvida de composição, ingredientes ou uso, não peça nada — só confirme que vai apurar.
 Use SOMENTE nomes de produto que existam em PRODUTOS DA BASE abaixo; se a pessoa escreveu errado (ex.: "catchupe"), use o nome correto naturalmente, sem repetir o errado nem corrigir a pessoa. Sem listas, sem títulos, máximo 1 emoji.
 PRODUTOS DA BASE:
@@ -82,17 +94,21 @@ ${extra?.firstName ? `A pessoa se chama ${extra.firstName}; use o primeiro nome 
   return r.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("").trim();
 }
 
-/** 4. Guardião — tom de voz + segurança. */
-export function guard(voice: BrandVoice, cls: Classification, message: string, draft: string, context: string, history = "") {
+/** 4. Guardião — tom de voz + segurança + civilidade. */
+export function guard(voice: BrandVoice, cls: Classification, message: string, draft: string, context: string, history = "", surface: "dm" | "comment" = "dm") {
   return json<Verdict>(MODEL_MAIN,
 `Você é o revisor final das respostas da marca ${voice.name} nas redes sociais. Responda SOMENTE com JSON válido:
-{"verdict":"aprovada|reescrita|escalar|bloqueada","reason":"motivo curto","escalate_to":"comercial|tecnico|sac|null","rewrite_hint":"instrução objetiva para o redator, se reescrita"}
+{"verdict":"aprovada|reescrita|redirecionar|escalar|bloqueada","reason":"motivo curto","escalate_to":"comercial|tecnico|sac|null","rewrite_hint":"instrução objetiva para o redator, se reescrita"}
 
+ORDEM DE DECISÃO: aprovada → reescrita → redirecionar → escalar → bloqueada. Use o degrau mais baixo que resolva.
+REDIRECIONAR (em vez de escalar) quando a informação pedida não está no contexto MAS é pública e a pessoa pode obter sozinha: composição/ingredientes/alérgenos (rótulo, ficha do produto no site), tabela nutricional, modo de uso básico, horário/canal do SAC. Escalar só quando precisa de apuração interna (reclamação, problema com produto, risco, comercial, jurídico, crise).
+BLOQUEIE (civilidade — sem exceção) se a resposta: contém preconceito ou generalização sobre raça, cor, etnia, gênero, orientação sexual, identidade de gênero, religião, deficiência, idade, origem regional, classe, corpo/peso ou sotaque, mesmo em tom de piada; debocha do cliente; usa palavrão, sarcasmo com pessoa irritada, conteúdo sexual ou ameaça; espelha agressividade; opina sobre política, religião, futebol ou concorrente; confirma/nega recall, processo ou boato; promete compensação/reembolso/brinde.
 BLOQUEIE ou ESCALE se a resposta: garante que o produto "não faz mal"/"é seguro"/"pode consumir" (qualquer garantia de saúde, mesmo em tom leve); usa nome de produto que não existe no contexto (ex.: repete um nome digitado errado pelo cliente); dá orientação médica/nutricional individual; afirma sobre alergia/alérgeno algo que não está no contexto; fala de álcool para menor de idade; promete preço, prazo ou estoque; expõe dado pessoal; contém código/EAN/validade que não está no contexto; responde a uma reclamação séria ou pedido de indenização (→ escalar sac); pergunta técnica que o contexto não cobre (→ escalar tecnico); pedido comercial de grande volume, tabela de preço ou cadastro de distribuidor (→ escalar comercial).
-Peça REESCRITA se: tom robótico/corporativo, se apresenta de novo em atendimento em andamento, ignora o histórico, mais de 6 linhas, listas com marcadores, repete a pergunta, fere a persona/regras da marca, ou inventou dica sem base.
+Peça REESCRITA se: em comentário público passa de 3 linhas ou expõe detalhe de reclamação/dados (deveria convidar ao direct); tom robótico/corporativo, se apresenta de novo em atendimento em andamento, ignora o histórico, mais de 6 linhas, listas com marcadores, repete a pergunta, fere a persona/regras da marca, ou inventou dica sem base.
 Regras extras da marca: ${voice.safety.join("; ") || "nenhuma"}.
 Persona: ${voice.persona || "próxima, direta, parceira do food service"}.`,
-`${history ? `HISTÓRICO:\n${history}\n` : ""}MENSAGEM: ${message}
+`SUPERFÍCIE: ${surface === "comment" ? "comentário público" : "mensagem direta"}
+${history ? `HISTÓRICO:\n${history}\n` : ""}MENSAGEM: ${message}
 CLASSIFICAÇÃO: ${JSON.stringify(cls)}
 CONTEXTO: ${context || "(vazio)"}
 RASCUNHO:
