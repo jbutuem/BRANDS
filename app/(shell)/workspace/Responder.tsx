@@ -1,5 +1,6 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { listOpen, loadThread, closeConversation, setLabel, type OpenConv, type Msg } from "./actions";
 
 type Contact = { id: string; kind: string; name: string; email: string | null; whatsapp: string | null; phone: string | null; scope: string | null };
 type Result = {
@@ -9,92 +10,148 @@ type Result = {
   sources: { products: string[]; distributors: string[]; documents: string[] };
   scrub: Record<string, number>; cleanText: string; latencyMs: number;
 };
-
 const INTENT: Record<string, string> = { produto: "dúvida de produto", onde_comprar: "onde comprar", tecnica: "dúvida técnica", engajamento: "engajamento", reclamacao: "reclamação", risco: "risco", outro: "outro" };
+const CH: Record<string, string> = { instagram: "IG", facebook: "FB", whatsapp: "WA", outro: "—" };
+const ago = (iso: string) => { const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000); return m < 60 ? `${m} min` : m < 1440 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} d`; };
 
 export function Responder({ brandName }: { brandName: string }) {
+  const [open, setOpen] = useState<OpenConv[]>([]);
+  const [conv, setConv] = useState<OpenConv | null>(null);
+  const [thread, setThread] = useState<Msg[]>([]);
+  const [name, setName] = useState("");            // só na memória da aba
   const [text, setText] = useState("");
   const [channel, setChannel] = useState("instagram");
   const [busy, setBusy] = useState(false);
   const [res, setRes] = useState<Result | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [fb, setFb] = useState<string | null>(null);
+  const [label, setLabelState] = useState("");
+
+  async function refreshOpen() { setOpen(await listOpen()); }
+  useEffect(() => { refreshOpen(); }, []);
+
+  async function pick(c: OpenConv) {
+    setConv(c); setChannel(c.channel); setLabelState(c.label ?? ""); setRes(null); setText(""); setFb(null); setName("");
+    setThread(await loadThread(c.id));
+  }
+  function startNew() { setConv(null); setThread([]); setRes(null); setText(""); setFb(null); setName(""); setLabelState(""); }
 
   async function generate(regen = false) {
     setBusy(true); setErr(null); setFb(null);
-    const body = regen && res ? { text, channel, conversationId: res.conversationId, messageId: res.messageId } : { text, channel };
+    const body = {
+      text, channel, contactName: name || undefined,
+      conversationId: regen && res ? res.conversationId : conv?.id,
+      messageId: regen && res ? res.messageId : undefined,
+    };
     const r = await fetch("/api/respond", { method: "POST", body: JSON.stringify(body) });
     const j = await r.json();
     setBusy(false);
     if (!r.ok) { setErr(j.error ?? "falha"); return; }
     if (regen && res) feedback(res.responseId, "regerada");
     setRes(j);
+    if (!conv) { await refreshOpen(); const c = (await listOpen()).find((x) => x.id === j.conversationId); if (c) { setConv(c); } }
+    setThread(await loadThread(j.conversationId));
   }
-  async function feedback(responseId: string, kind: string) {
-    await fetch("/api/feedback", { method: "POST", body: JSON.stringify({ responseId, kind }) });
-  }
+  async function feedback(responseId: string, kind: string) { await fetch("/api/feedback", { method: "POST", body: JSON.stringify({ responseId, kind }) }); }
   async function copy() {
     if (!res) return;
     await navigator.clipboard.writeText(res.text);
-    feedback(res.responseId, "copiada"); setFb("copiada");
+    await feedback(res.responseId, "copiada"); setFb("copiada");
+    setThread(await loadThread(res.conversationId)); setText(""); refreshOpen();
   }
-  function reset() { setText(""); setRes(null); setErr(null); setFb(null); }
+  async function close() { if (!conv) return; await closeConversation(conv.id); startNew(); refreshOpen(); }
+  async function saveLabel() { if (conv) { await setLabel(conv.id, label); refreshOpen(); } }
 
   const scrubbed = res ? Object.values(res.scrub).reduce((a, b) => a + b, 0) : 0;
   const badge = res ? ({ aprovada: ["#1b7f4b", "aprovada pelo guardião"], reescrita: ["#8a6d00", "reescrita e aprovada"], escalar: ["#b3261e", "encaminhar"], bloqueada: ["#b3261e", "bloqueada"] } as Record<string, string[]>)[res.verdict] : null;
 
   return (
-    <>
-      <div className="panel">
-        <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 10 }}>
-          <label className="muted">Canal <select value={channel} onChange={(e) => setChannel(e.target.value)} style={{ marginLeft: 6, padding: 6, borderRadius: 6, border: "1px solid var(--line)" }}>
-            <option value="instagram">Instagram</option><option value="facebook">Facebook</option><option value="whatsapp">WhatsApp</option><option value="outro">Outro</option>
-          </select></label>
-          {res && <button onClick={reset} style={{ marginLeft: "auto", background: "none", border: "none", textDecoration: "underline", cursor: "pointer" }} className="muted">nova conversa</button>}
+    <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", gap: 16, alignItems: "start" }}>
+      {/* Atendimentos abertos */}
+      <aside className="panel" style={{ margin: 0 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <h3 style={{ margin: 0 }}>Atendimentos</h3>
+          <button onClick={startNew} className="muted" style={{ background: "none", border: "none", textDecoration: "underline", cursor: "pointer" }}>+ novo</button>
         </div>
-        <textarea className="paste" value={text} onChange={(e) => setText(e.target.value)} placeholder={`Cole aqui a mensagem recebida por ${brandName}…`} disabled={busy} />
-        <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 12 }}>
-          <button className="btn" onClick={() => generate(false)} disabled={busy || !text.trim()}>{busy ? "Pensando…" : res ? "Nova mensagem" : "Gerar resposta"}</button>
-          {res && <button className="btn" onClick={() => generate(true)} disabled={busy} style={{ background: "transparent", color: "var(--ink)", border: "1px solid var(--line)" }}>Regerar</button>}
-          {err && <span className="error">{err}</span>}
-        </div>
-      </div>
+        {!open.length && <p className="muted">Nenhum em aberto.</p>}
+        {open.map((c) => (
+          <button key={c.id} onClick={() => pick(c)} style={{ display: "block", width: "100%", textAlign: "left", background: conv?.id === c.id ? "var(--paper)" : "transparent", border: "none", borderTop: "1px solid var(--line)", padding: "8px 4px", cursor: "pointer" }}>
+            <div style={{ fontSize: 13 }}><b>{CH[c.channel] ?? c.channel}</b>{c.region_uf ? ` · ${c.region_uf}` : ""} · <span className="muted">{ago(c.last_activity)} · {c.msgs} msg</span></div>
+            <div style={{ fontSize: 13 }}>{c.label || c.summary || "(sem resumo)"}</div>
+          </button>
+        ))}
+      </aside>
 
-      {res && (
-        <div className="panel" style={{ borderLeft: `4px solid ${badge![0]}` }}>
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
-            <span style={{ color: badge![0], fontWeight: 600 }}>{badge![1]}</span>
-            <span className="muted">· {INTENT[res.classification.intent] ?? res.classification.intent}{res.classification.uf ? ` · ${res.classification.uf}` : ""} · v{res.version} · {(res.latencyMs / 1000).toFixed(1)}s</span>
-            {scrubbed > 0 && <span className="muted">· {scrubbed} dado(s) pessoal(is) removido(s) antes de guardar</span>}
-          </div>
-          {res.verdict !== "aprovada" && res.verdict !== "reescrita" && <p className="error" style={{ marginBottom: 10 }}>{res.reason}</p>}
-          <div style={{ whiteSpace: "pre-wrap", fontSize: 16, lineHeight: 1.55, padding: "4px 0 14px" }}>{res.text}</div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            <button className="btn" onClick={copy} disabled={res.verdict === "bloqueada"}>{fb === "copiada" ? "Copiado ✓" : "Copiar"}</button>
-            <button onClick={() => { feedback(res.responseId, "gostei"); setFb("gostei"); }} disabled={!!fb && fb !== "copiada"} style={btn(fb === "gostei")}>👍 Gostei</button>
-            <button onClick={() => { feedback(res.responseId, "nao_gostei"); setFb("nao_gostei"); }} disabled={!!fb && fb !== "copiada"} style={btn(fb === "nao_gostei")}>👎 Não gostei</button>
-          </div>
-          {res.escalateTo && (
-            <div style={{ marginTop: 14 }}>
-              <b>Encaminhar para {res.escalateTo}</b>
-              {res.contacts.length ? res.contacts.map((c) => (
-                <div key={c.id} className="muted">• {c.name}{c.scope ? ` (${c.scope})` : ""} — {c.whatsapp && <a href={`https://wa.me/${c.whatsapp.replace(/\D/g, "")}?text=${encodeURIComponent(`Contato via ${channel} (${brandName}):\n\n${res.cleanText}`)}`} target="_blank">WhatsApp</a>}{c.whatsapp && c.email && " · "}{c.email && <a href={`mailto:${c.email}?subject=${encodeURIComponent(`[Listening] ${brandName} — ${INTENT[res.classification.intent]}`)}&body=${encodeURIComponent(res.cleanText)}`}>e-mail</a>}</div>
-              )) : <p className="muted">Nenhum contato de {res.escalateTo} cadastrado para {brandName}. Cadastre em Configuração da marca.</p>}
+      <div>
+        {/* Fio do atendimento */}
+        {conv && (
+          <div className="panel">
+            <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
+              <input value={label} onChange={(e) => setLabelState(e.target.value)} onBlur={saveLabel} placeholder="Referência (ex.: hamburgueria em Goiânia) — sem nome de pessoa"
+                style={{ flex: 1, minWidth: 240, border: "1px solid var(--line)", borderRadius: 6, padding: 8, fontSize: 13 }} />
+              <button onClick={close} className="muted" style={{ background: "none", border: "1px solid var(--line)", borderRadius: 6, padding: "6px 10px", cursor: "pointer" }}>Encerrar atendimento</button>
             </div>
-          )}
-          <details style={{ marginTop: 14 }} className="muted">
-            <summary>O que a resposta usou</summary>
-            <div style={{ marginTop: 6 }}>
-              {res.sources.products.length > 0 && <div>Produtos: {res.sources.products.join(", ")}</div>}
-              {res.sources.distributors.length > 0 && <div>Distribuidores: {res.sources.distributors.join(", ")}</div>}
-              {res.sources.documents.length > 0 && <div>Materiais: {res.sources.documents.join(", ")}</div>}
-              {!res.sources.products.length && !res.sources.distributors.length && !res.sources.documents.length && <div>Nada da base — resposta só com a persona da marca. Isso foi registrado como lacuna.</div>}
-              <div style={{ marginTop: 6 }}>Mensagem como foi guardada: <i>{res.cleanText}</i></div>
-            </div>
-          </details>
+            {thread.map((m) => (
+              <div key={m.id} style={{ display: "flex", justifyContent: m.direction === "out" ? "flex-end" : "flex-start", margin: "6px 0" }}>
+                <div style={{ maxWidth: "80%", background: m.direction === "out" ? "var(--brand)" : "var(--paper)", color: m.direction === "out" ? "var(--brand-ink)" : "var(--ink)", borderRadius: 10, padding: "8px 12px", fontSize: 14, whiteSpace: "pre-wrap" }}>{m.content}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Entrada */}
+        <div className="panel">
+          <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
+            <label className="muted">Canal <select value={channel} onChange={(e) => setChannel(e.target.value)} disabled={!!conv} style={{ marginLeft: 6, padding: 6, borderRadius: 6, border: "1px solid var(--line)" }}>
+              <option value="instagram">Instagram</option><option value="facebook">Facebook</option><option value="whatsapp">WhatsApp</option><option value="outro">Outro</option>
+            </select></label>
+            <label className="muted">Como a pessoa se chama <input value={name} onChange={(e) => setName(e.target.value)} placeholder="opcional — usado na resposta, não é guardado" style={{ marginLeft: 6, padding: 6, borderRadius: 6, border: "1px solid var(--line)", width: 300 }} /></label>
+          </div>
+          <textarea className="paste" value={text} onChange={(e) => setText(e.target.value)} placeholder={conv ? "Cole a nova mensagem do cliente neste atendimento…" : `Cole aqui a mensagem recebida por ${brandName}…`} disabled={busy} />
+          <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 12 }}>
+            <button className="btn" onClick={() => generate(false)} disabled={busy || !text.trim()}>{busy ? "Pensando…" : "Gerar resposta"}</button>
+            {res && <button className="btn" onClick={() => generate(true)} disabled={busy} style={{ background: "transparent", color: "var(--ink)", border: "1px solid var(--line)" }}>Regerar</button>}
+            {err && <span className="error">{err}</span>}
+          </div>
         </div>
-      )}
-    </>
+
+        {/* Resposta */}
+        {res && (
+          <div className="panel" style={{ borderLeft: `4px solid ${badge![0]}` }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
+              <span style={{ color: badge![0], fontWeight: 600 }}>{badge![1]}</span>
+              <span className="muted">· {INTENT[res.classification.intent] ?? res.classification.intent}{res.classification.uf ? ` · ${res.classification.uf}` : ""} · v{res.version} · {(res.latencyMs / 1000).toFixed(1)}s</span>
+              {scrubbed > 0 && <span className="muted">· {scrubbed} dado(s) pessoal(is) fora do banco</span>}
+            </div>
+            {res.verdict !== "aprovada" && res.verdict !== "reescrita" && <p className="error" style={{ marginBottom: 10 }}>{res.reason}</p>}
+            <div style={{ whiteSpace: "pre-wrap", fontSize: 16, lineHeight: 1.55, padding: "4px 0 14px" }}>{res.text}</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <button className="btn" onClick={copy} disabled={res.verdict === "bloqueada"}>{fb === "copiada" ? "Copiado ✓ (registrado no atendimento)" : "Copiar e registrar"}</button>
+              <button onClick={() => { feedback(res.responseId, "gostei"); setFb("gostei"); }} disabled={!!fb && fb !== "copiada"} style={btn(fb === "gostei")}>👍</button>
+              <button onClick={() => { feedback(res.responseId, "nao_gostei"); setFb("nao_gostei"); }} disabled={!!fb && fb !== "copiada"} style={btn(fb === "nao_gostei")}>👎</button>
+            </div>
+            {res.escalateTo && (
+              <div style={{ marginTop: 14 }}>
+                <b>Encaminhar para {res.escalateTo}</b>
+                {res.contacts.length ? res.contacts.map((c) => (
+                  <div key={c.id} className="muted">• {c.name}{c.scope ? ` (${c.scope})` : ""} — {c.whatsapp && <a href={`https://wa.me/${c.whatsapp.replace(/\D/g, "")}?text=${encodeURIComponent(`Contato via ${channel} (${brandName}):\n\n${res.cleanText}`)}`} target="_blank">WhatsApp</a>}{c.whatsapp && c.email && " · "}{c.email && <a href={`mailto:${c.email}?subject=${encodeURIComponent(`[Listening] ${brandName} — ${INTENT[res.classification.intent]}`)}&body=${encodeURIComponent(res.cleanText)}`}>e-mail</a>}</div>
+                )) : <p className="muted">Nenhum contato de {res.escalateTo} cadastrado para {brandName}. Cadastre em Configuração da marca.</p>}
+              </div>
+            )}
+            <details style={{ marginTop: 14 }} className="muted">
+              <summary>O que a resposta usou</summary>
+              <div style={{ marginTop: 6 }}>
+                {res.sources.products.length > 0 && <div>Produtos: {res.sources.products.join(", ")}</div>}
+                {res.sources.distributors.length > 0 && <div>Distribuidores: {res.sources.distributors.join(", ")}</div>}
+                {res.sources.documents.length > 0 && <div>Materiais: {res.sources.documents.join(", ")}</div>}
+                {!res.sources.products.length && !res.sources.distributors.length && !res.sources.documents.length && <div>Nada da base — resposta só com a persona da marca. Registrado como lacuna.</div>}
+                <div style={{ marginTop: 6 }}>Mensagem como foi guardada: <i>{res.cleanText}</i></div>
+              </div>
+            </details>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 function btn(active: boolean): React.CSSProperties {
