@@ -54,7 +54,7 @@ export async function POST(req: Request) {
   // 2. Retriever — estruturado primeiro, texto depois (RLS + brand da sessão)
   const q = [cls.summary, ...(cls.products ?? [])].filter(Boolean).join(" ") || clean;
   const [voiceRow, prods, dists, chunks, golden, contacts] = await Promise.all([
-    sb.from("brand_settings").select("persona, voice_dos, voice_donts, safety_rules, signature, official_links").eq("brand_id", brandId).maybeSingle(),
+    sb.from("brand_settings").select("persona, voice_dos, voice_donts, safety_rules, signature, official_links, brand_facts").eq("brand_id", brandId).maybeSingle(),
     sb.rpc("search_products", { p_brand_id: brandId, p_query: (cls.products?.[0] ?? q), p_limit: 6 }),
     cls.uf ? sb.rpc("distributors_by_uf", { p_brand_id: brandId, p_uf: cls.uf }) : Promise.resolve({ data: [] as never[] }),
     sb.rpc("search_chunks", { p_brand_id: brandId, p_query: q, p_limit: 5 }),
@@ -66,7 +66,7 @@ export async function POST(req: Request) {
     name: active.name,
     persona: voiceRow.data?.persona ?? "",
     dos: voiceRow.data?.voice_dos ?? [], donts: voiceRow.data?.voice_donts ?? [], safety: voiceRow.data?.safety_rules ?? [],
-    signature: voiceRow.data?.signature ?? null, links: (voiceRow.data?.official_links as Record<string, string>) ?? {},
+    signature: voiceRow.data?.signature ?? null, links: (voiceRow.data?.official_links as Record<string, string>) ?? {}, facts: voiceRow.data?.brand_facts ?? [],
   };
   type P = { id: string; name: string; codigo: string | null; line: string | null; packaging: string | null; shelf_life: string | null; units_per_box: number | null; applications: string[]; status: string; ean: string | null };
   type D = { id: string; fantasia: string; cidade: string | null; ufs: string[]; whatsapp: string | null; telefone: string | null; email: string | null };
