@@ -13,6 +13,7 @@ export const runtime = "nodejs";
  * POST { text, channel, surface?, contactName?, conversationId?, messageId? }
  * Pipeline: Scrubber → Classificador → Retriever → Redator → Guardião (máx. 2 ciclos).
  * Mensagem ofensiva: caminho de moderação. B2B: contato do comercial vai na resposta (não se pede dados da pessoa).
+ * Anotações da equipe (brand_notes) entram como fatos, padrões e dicas.
  * brand_id vem SEMPRE da sessão. Texto bruto e nome nunca são gravados.
  */
 export async function POST(req: Request) {
@@ -39,7 +40,8 @@ export async function POST(req: Request) {
   const surface: "dm" | "comment" = body.surface === "comment" ? "comment" : "dm";
   cls.flags = [...new Set([...(cls.flags ?? []), ...(detectCrisis(clean) ? ["crise" as const] : [])])];
   const severe = (cls.flags ?? []).some((f) => f === "ameaca" || f === "crise" || f === "juridico" || f === "menor");
-  const offensive = (cls.flags ?? []).some((f) => f === "ofensa" || f === "discurso_odio" || f === "sexismo");
+  // Moderação só para ódio/sexismo, ou ofensa SEM reclamação real (troll). Cliente irritado reclamando segue o fluxo normal (acolher + SAC).
+  const offensive = (cls.flags ?? []).some((f) => f === "discurso_odio" || f === "sexismo") || ((cls.flags ?? []).includes("ofensa") && cls.intent !== "reclamacao");
 
   // Histórico do atendimento (já anonimizado) — permite continuar a conversa
   let history: { direction: string; content: string }[] = [];
@@ -55,20 +57,25 @@ export async function POST(req: Request) {
 
   // 2. Retriever — estruturado primeiro, texto depois (RLS + brand da sessão)
   const q = [cls.summary, ...(cls.products ?? [])].filter(Boolean).join(" ") || clean;
-  const [voiceRow, prods, dists, chunks, golden, contacts] = await Promise.all([
+  const [voiceRow, prods, dists, chunks, golden, contacts, notesAll, notesHit] = await Promise.all([
     sb.from("brand_settings").select("persona, voice_dos, voice_donts, safety_rules, signature, official_links, brand_facts, b2b_offers").eq("brand_id", brandId).maybeSingle(),
     sb.rpc("search_products", { p_brand_id: brandId, p_query: (cls.products?.[0] ?? q), p_limit: 6 }),
     cls.uf ? sb.rpc("distributors_by_uf", { p_brand_id: brandId, p_uf: cls.uf }) : Promise.resolve({ data: [] as never[] }),
     sb.rpc("search_chunks", { p_brand_id: brandId, p_query: q, p_limit: 5 }),
     sb.from("golden_responses").select("question, answer").eq("brand_id", brandId).textSearch("tsv", q.split(/\s+/).slice(0, 6).join(" | "), { config: "portuguese" }).limit(3),
     sb.from("internal_contacts").select("id, kind, name, email, whatsapp, phone, scope").eq("brand_id", brandId).eq("is_active", true),
+    sb.from("brand_notes").select("kind, title, body").eq("brand_id", brandId).eq("is_active", true).in("kind", ["fato", "padrao"]),
+    sb.from("brand_notes").select("kind, title, body").eq("brand_id", brandId).eq("is_active", true).in("kind", ["dica", "correcao"]).textSearch("tsv", q.split(/\s+/).filter((w) => w.length > 3).slice(0, 8).join(" | ") || q, { config: "portuguese" }).limit(5),
   ]);
+  const noteFacts = (notesAll.data ?? []).filter((n) => n.kind === "fato").map((n) => (n.title ? n.title + ": " : "") + n.body);
+  const notePatterns = (notesAll.data ?? []).filter((n) => n.kind === "padrao").map((n) => (n.title ? n.title + ": " : "") + n.body);
+  const noteTips = (notesHit.data ?? []).map((n) => `[${n.kind === "correcao" ? "CORREÇÃO" : "DICA"}${n.title ? " · " + n.title : ""}] ${n.body}`);
 
   const voice: BrandVoice = {
     name: active.name,
     persona: voiceRow.data?.persona ?? "",
-    dos: voiceRow.data?.voice_dos ?? [], donts: voiceRow.data?.voice_donts ?? [], safety: voiceRow.data?.safety_rules ?? [],
-    signature: voiceRow.data?.signature ?? null, links: (voiceRow.data?.official_links as Record<string, string>) ?? {}, facts: voiceRow.data?.brand_facts ?? [], offers: voiceRow.data?.b2b_offers ?? [],
+    dos: [...(voiceRow.data?.voice_dos ?? []), ...notePatterns], donts: voiceRow.data?.voice_donts ?? [], safety: voiceRow.data?.safety_rules ?? [],
+    signature: voiceRow.data?.signature ?? null, links: (voiceRow.data?.official_links as Record<string, string>) ?? {}, facts: [...(voiceRow.data?.brand_facts ?? []), ...noteFacts], offers: voiceRow.data?.b2b_offers ?? [],
   };
   type P = { id: string; name: string; codigo: string | null; line: string | null; packaging: string | null; shelf_life: string | null; units_per_box: number | null; applications: string[]; status: string; ean: string | null };
   type D = { id: string; fantasia: string; cidade: string | null; ufs: string[]; whatsapp: string | null; telefone: string | null; email: string | null };
@@ -79,6 +86,7 @@ export async function POST(req: Request) {
     P_.length ? "PRODUTOS:\n" + P_.map((p) => `- ${p.name} | cód. ${p.codigo ?? "?"} | ${p.line ?? ""} | ${p.packaging ?? ""} | validade ${p.shelf_life ?? "?"} | ${p.units_per_box ?? "?"}/caixa | aplicações: ${p.applications.join(", ")} | ${p.status}`).join("\n") : "",
     D_.length ? `DISTRIBUIDORES EM ${cls.uf}:\n` + D_.map((d) => `- ${d.fantasia} (${d.cidade ?? ""}) — WhatsApp ${d.whatsapp ?? d.telefone ?? "?"} — ${d.email ?? ""}`).join("\n") : "",
     C_.length ? "TRECHOS DE MATERIAIS DA MARCA:\n" + C_.map((c) => `[${c.document_name}${c.page ? ` p.${c.page}` : ""}] ${c.content.slice(0, 900)}`).join("\n\n") : "",
+    noteTips.length ? "ANOTAÇÕES DA EQUIPE (prevalecem sobre o resto):\n" + noteTips.join("\n") : "",
     Object.keys(voice.links).length ? "LINKS OFICIAIS: " + Object.entries(voice.links).map(([k, v]) => `${k}: ${v}`).join(" · ") : "",
   ].filter(Boolean).join("\n\n");
   const examples = (golden.data ?? []).map((g) => `P: ${g.question}\nR: ${g.answer}`).join("\n\n");
@@ -108,7 +116,7 @@ export async function POST(req: Request) {
       verdict = { verdict: "moderacao", reason: `mensagem com ${(cls.flags ?? []).join(", ")}`, escalate_to: null };
     } else for (;;) {
       draft = await write(voice, cls, clean, ctx, examples, hint, { firstName, history: historyText, surface, commercial: commercialText });
-      try { verdict = await guard(voice, cls, clean, draft, ctx, historyText, surface); }
+      try { verdict = await guard(voice, cls, clean, draft, ctx, historyText, surface); if (String(verdict.escalate_to) === "null" || !verdict.escalate_to) verdict.escalate_to = null; }
       catch { verdict = cycles < 2 ? { verdict: "reescrita", reason: "revisor ilegível", rewrite_hint: "responda mais curto e simples" } : { verdict: "escalar", reason: "revisor indisponível", escalate_to: "sac" }; }
       // Sinal de crise/ameaça/jurídico/menor: nunca sai resposta direta — vai para o SAC com acolhimento neutro.
       if (severe && verdict.verdict !== "bloqueada") { verdict = { verdict: "escalar", reason: `sinal sensível: ${(cls.flags ?? []).join(", ")}`, escalate_to: "sac" }; break; }
@@ -117,7 +125,7 @@ export async function POST(req: Request) {
     }
     // Reprovado ou redirecionado pelo Guardião: o rascunho é descartado e sai uma resposta segura.
     if (verdict.verdict === "escalar" || verdict.verdict === "bloqueada" || verdict.verdict === "redirecionar") {
-      draft = await safeReply(voice, cls, clean, verdict.reason, verdict.escalate_to ?? null, P_.length ? P_.map((p) => `- ${p.name} (${p.line ?? ""}, ${p.packaging ?? ""})`).join("\n") : "", { firstName, history: historyText, surface, mode: verdict.verdict });
+      draft = await safeReply(voice, cls, clean, verdict.reason, (verdict.escalate_to && String(verdict.escalate_to) !== "null") ? verdict.escalate_to : null, P_.length ? P_.map((p) => `- ${p.name} (${p.line ?? ""}, ${p.packaging ?? ""})`).join("\n") : "", { firstName, history: historyText, surface, mode: verdict.verdict });
     }
   } catch (e) {
     return NextResponse.json({ error: `IA indisponível: ${e instanceof Error ? e.message : e}` }, { status: 502 });
@@ -153,11 +161,12 @@ export async function POST(req: Request) {
   }).select("id, version").single();
   if (rerr) return NextResponse.json({ error: rerr.message }, { status: 500 });
 
-  const esc = verdict.escalate_to ? (contacts.data ?? []).filter((c) => c.kind === verdict.escalate_to) : [];
+  const escTo = verdict.escalate_to && String(verdict.escalate_to) !== "null" ? verdict.escalate_to : null;
+  const esc = escTo ? (contacts.data ?? []).filter((c) => c.kind === escTo) : [];
   const commercial = (contacts.data ?? []).filter((c) => c.kind === "comercial");
   return NextResponse.json({
     conversationId, messageId, responseId: resp.id, version: resp.version,
-    text: draft, verdict: verdict.verdict, reason: verdict.reason, escalateTo: verdict.escalate_to ?? null, contacts: esc, commercial,
+    text: draft, verdict: verdict.verdict, reason: verdict.reason, escalateTo: escTo, contacts: esc, commercial,
     classification: { intent: cls.intent, uf: cls.uf, city: cls.city, sentiment: cls.sentiment, summary: cls.summary, flags: cls.flags ?? [], surface, audience: cls.audience ?? "indefinido", businessType: cls.business_type ?? null, businessName: cls.business_name ?? null, leadSignals: cls.lead_signals ?? [], products: cls.products ?? [] },
     sources: { products: P_.map((p) => p.name), distributors: D_.map((d) => d.fantasia), documents: [...new Set(C_.map((c) => c.document_name))] },
     scrub: s.report, cleanText: clean, latencyMs: Date.now() - t0,
