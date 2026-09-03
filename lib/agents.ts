@@ -9,8 +9,9 @@ export type Intent = "produto" | "onde_comprar" | "tecnica" | "engajamento" | "r
 export type Classification = {
   intent: Intent; products: string[]; uf: string | null; city: string | null;
   sentiment: "positivo" | "neutro" | "negativo"; personal_names: string[]; summary: string; flags?: Flag[];
+  audience?: "b2c" | "b2b" | "indefinido"; business_type?: string | null; business_name?: string | null; lead_signals?: string[];
 };
-export type BrandVoice = { name: string; persona: string; dos: string[]; donts: string[]; safety: string[]; signature: string | null; links: Record<string, string>; facts: string[] };
+export type BrandVoice = { name: string; persona: string; dos: string[]; donts: string[]; safety: string[]; signature: string | null; links: Record<string, string>; facts: string[]; offers: string[] };
 export type Verdict = { verdict: "aprovada" | "reescrita" | "redirecionar" | "escalar" | "bloqueada" | "moderacao"; reason: string; escalate_to?: "comercial" | "tecnico" | "sac" | null; rewrite_hint?: string };
 
 /** Extrai e repara JSON vindo do modelo: pega o primeiro {...}, escapa quebras de linha dentro de strings. */
@@ -47,14 +48,15 @@ async function json<T>(model: string, system: string, user: string, max = 1200):
 export function classify(brand: string, text: string) {
   return json<Classification>(MODEL_FAST,
 `Você classifica mensagens recebidas nas redes sociais da marca ${brand} (food service, Brasil). Responda SOMENTE com JSON válido, sem comentários:
-{"intent":"produto|onde_comprar|tecnica|engajamento|reclamacao|risco|outro","products":["nomes de produtos citados"],"uf":"UF em 2 letras ou null","city":"cidade ou null","sentiment":"positivo|neutro|negativo","personal_names":["nomes de PESSOAS citados no texto, nunca marcas ou produtos"],"summary":"o que a pessoa quer, em uma frase","flags":["zero ou mais de: ofensa, discurso_odio, sexismo, ameaca, crise, juridico, saude, menor"]}
+{"intent":"produto|onde_comprar|tecnica|engajamento|reclamacao|risco|outro","products":["nomes de produtos citados"],"uf":"UF em 2 letras ou null","city":"cidade ou null","sentiment":"positivo|neutro|negativo","personal_names":["nomes de PESSOAS citados no texto, nunca marcas ou produtos"],"summary":"o que a pessoa quer, em uma frase","flags":["zero ou mais de: ofensa, discurso_odio, sexismo, ameaca, crise, juridico, saude, menor"],"audience":"b2c|b2b|indefinido","business_type":"hamburgueria|cafeteria|restaurante|padaria|hotel|bar|distribuidor|revenda|sorveteria|dark kitchen|outro|null","business_name":"nome do estabelecimento se citado, senão null","lead_signals":["sinais de compra: volume, cardápio, tabela, pedido, distribuidor, revenda, meu restaurante etc."]}
 Regras: "risco" = saúde, alergia grave, intoxicação, menor de idade, ameaça, pedido de dado pessoal. "reclamacao" = produto com defeito, atraso, atendimento ruim. "tecnica" = como usar, rendimento, conservação, tabela nutricional, alérgenos.
-Flags: "ofensa" = xingamento/deboche dirigido à marca ou equipe; "discurso_odio" = preconceito ou ataque a grupo (raça, cor, etnia, orientação sexual, identidade de gênero, religião, deficiência, origem regional, corpo); "sexismo" = machismo, objetificação ou sexualização de mulheres, insinuação sexual, comparação de pessoas a objetos/produtos (ex.: "melhor que pegar uma rapariga", "gostosa"), piada de cunho sexual — mesmo em tom de brincadeira; quando houver qualquer uma dessas, a intenção NÃO é engajamento; "ameaca" = ameaça a pessoas ou à marca; "crise" = menção a Procon, advogado, processo, imprensa, expor/viralizar, Anvisa, intoxicação, mal-estar, corpo estranho, produto vencido/estufado, recall, boicote; "juridico" = pedido de indenização/compensação; "saude" = pergunta de segurança alimentar/alergia/gestante/criança; "menor" = indícios de menor de idade.`,
+Flags: "ofensa" = xingamento/deboche dirigido à marca ou equipe; "discurso_odio" = preconceito ou ataque a grupo (raça, cor, etnia, orientação sexual, identidade de gênero, religião, deficiência, origem regional, corpo); "sexismo" = machismo, objetificação ou sexualização de mulheres, insinuação sexual, comparação de pessoas a objetos/produtos (ex.: "melhor que pegar uma rapariga", "gostosa"), piada de cunho sexual — mesmo em tom de brincadeira; quando houver qualquer uma dessas, a intenção NÃO é engajamento; "ameaca" = ameaça a pessoas ou à marca; "crise" = menção a Procon, advogado, processo, imprensa, expor/viralizar, Anvisa, intoxicação, mal-estar, corpo estranho, produto vencido/estufado, recall, boicote; "juridico" = pedido de indenização/compensação; "saude" = pergunta de segurança alimentar/alergia/gestante/criança; "menor" = indícios de menor de idade.
+Público: "b2b" = fala como dono/gestor/chef/comprador de um negócio (restaurante, cafeteria, hamburgueria, padaria, hotel, bar, distribuidor, revenda, food truck, dark kitchen), cita cardápio, volume, pedido, fornecedor, tabela, CNPJ; "b2c" = consumidor final (comeu, comprou no mercado, quer receita em casa, elogio pessoal); "indefinido" = não dá para saber. Na dúvida entre b2c e b2b, use "indefinido".`,
     text);
 }
 
 /** 3. Redator — escreve como a marca. */
-export async function write(voice: BrandVoice, cls: Classification, message: string, context: string, examples: string, hint?: string, extra?: { firstName: string | null; history: string; surface?: "dm" | "comment" }) {
+export async function write(voice: BrandVoice, cls: Classification, message: string, context: string, examples: string, hint?: string, extra?: { firstName: string | null; history: string; surface?: "dm" | "comment"; commercial?: string }) {
   const r = await client().messages.create({
     model: MODEL_MAIN, max_tokens: 700,
     system: `Você responde, em nome da marca ${voice.name}, mensagens de clientes e leads nas redes sociais (Instagram/Facebook/WhatsApp), em português do Brasil.
@@ -66,6 +68,15 @@ ${voice.signature ? `ASSINATURA: termine com "${voice.signature}"` : ""}
 
 FATOS DA MARCA (sempre verdadeiros, valem para toda a linha):
 ${voice.facts.length ? voice.facts.map((f) => "- " + f).join("\n") : "(nenhum cadastrado)"}
+
+PÚBLICO E OBJETIVO:
+${cls.audience === "b2b"
+  ? `B2B — a pessoa representa um NEGÓCIO (${cls.business_type ?? "tipo não informado"}${cls.business_name ? ", " + cls.business_name : ""}). Objetivo: transformar a conversa em oportunidade comercial SEM soar vendedor. Playbook: (1) responda o que foi perguntado com precisão; (2) mostre que entende a operação dela (rendimento, padronização, ticket médio, delivery); (3) qualifique com UMA pergunta natural — o que ainda falta saber entre tipo de negócio, cidade e volume/uso; (4) ofereça algo concreto da lista OFERTAS B2B; (5) feche com um próximo passo claro e concreto: indique o distribuidor da região (se houver no contexto) E passe o contato do consultor comercial que estiver em CONTATO COMERCIAL (WhatsApp e/ou e-mail, exatamente como cadastrado), convidando a pessoa a chamar — "chama o Fulano no WhatsApp X que ele te atende". NUNCA peça telefone, e-mail ou dados da pessoa; o caminho é ela procurar o comercial. Nunca prometa preço, condição ou prazo.`
+  : cls.audience === "b2c"
+  ? `B2C — consumidor final. Objetivo: acolher, encantar e engajar: responda, dê uma dica ou ideia de uso, e se fizer sentido convide a acompanhar a marca. Onde comprar: cite o que houver no contexto; se a marca não vende no varejo (ver FATOS), diga com carinho onde a pessoa encontra os produtos (estabelecimentos que usam) sem prometer ponto de venda.`
+  : `PÚBLICO INDEFINIDO — responda a pergunta e, de forma natural, descubra: "você tem um negócio de food service ou é pra uso em casa?" (uma pergunta só, integrada ao texto).`}
+OFERTAS B2B AUTORIZADAS: ${voice.offers.length ? voice.offers.join("; ") : "nenhuma além de indicar distribuidor"}.
+CONTATO COMERCIAL (passe ao cliente quando B2B): ${extra?.commercial || "(nenhum cadastrado — diga que vai conectar com o comercial e pergunte a cidade)"}
 
 REGRAS DURAS:
 - Se a pergunta é coberta por um FATO DA MARCA, responda com segurança e de forma direta. Nunca use "depende", "eventual", "pode ser que" ou mande olhar o rótulo para algo que está nos fatos. Ex.: "tem álcool?" → "Não, nenhum produto nosso tem álcool" (se o fato disser isso).
@@ -97,7 +108,7 @@ Escreva só a resposta final.` }],
   return r.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("").trim();
 }
 
-/** 3b. Resposta segura — usada quando o Guardião decide redirecionar/escalar/bloquear: acolhe e direciona, sem afirmar nada de risco. */
+/** 3b. Resposta segura — usada quando o Guardião decide escalar/bloquear: acolhe e direciona, sem afirmar nada de risco. */
 export async function safeReply(voice: BrandVoice, cls: Classification, message: string, reason: string, escalateTo: string | null, context: string, extra?: { firstName: string | null; history: string; surface?: "dm" | "comment"; mode?: "escalar" | "redirecionar" | "bloqueada" }) {
   const r = await client().messages.create({
     model: MODEL_MAIN, max_tokens: 400,
@@ -137,7 +148,7 @@ Escreva só a resposta, sem emoji, sem assinatura.`,
   return r.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("").trim();
 }
 
-/** 4. Guardião — tom de voz + segurança + civilidade. */
+/** 4. Guardião — tom de voz + segurança + civilidade + negócio. */
 export function guard(voice: BrandVoice, cls: Classification, message: string, draft: string, context: string, history = "", surface: "dm" | "comment" = "dm") {
   return json<Verdict>(MODEL_MAIN,
 `Você é o revisor final das respostas da marca ${voice.name} nas redes sociais. Responda SOMENTE com JSON válido, em UMA linha, sem quebras de linha dentro dos textos:
@@ -148,8 +159,9 @@ REDIRECIONAR (em vez de escalar) quando a informação pedida não está no cont
 BLOQUEIE (civilidade — sem exceção) se a resposta: engaja, brinca, agradece ou oferece produto em reação a uma mensagem ofensiva, machista, sexualizada ou preconceituosa (a única resposta aceitável é um limite curto e firme); contém preconceito ou generalização sobre raça, cor, etnia, gênero, orientação sexual, identidade de gênero, religião, deficiência, idade, origem regional, classe, corpo/peso ou sotaque, mesmo em tom de piada; debocha do cliente; usa palavrão, sarcasmo com pessoa irritada, conteúdo sexual ou ameaça; espelha agressividade; opina sobre política, religião, futebol ou concorrente; confirma/nega recall, processo ou boato; promete compensação/reembolso/brinde.
 BLOQUEIE ou ESCALE se a resposta: garante que o produto "não faz mal"/"é seguro"/"pode consumir" (qualquer garantia de saúde, mesmo em tom leve); usa nome de produto que não existe no contexto (ex.: repete um nome digitado errado pelo cliente); dá orientação médica/nutricional individual; afirma sobre alergia/alérgeno algo que não está no contexto; fala de álcool para menor de idade; promete preço, prazo ou estoque; expõe dado pessoal; contém código/EAN/validade que não está no contexto; responde a uma reclamação séria ou pedido de indenização (→ escalar sac); pergunta técnica que o contexto não cobre (→ escalar tecnico); pedido comercial de grande volume, tabela de preço ou cadastro de distribuidor (→ escalar comercial).
 FATOS DA MARCA (sempre verdadeiros): ${voice.facts.length ? voice.facts.join(" | ") : "nenhum"}.
-Peça REESCRITA se: hesita ("depende", "eventual", "pode ser que", "veja no rótulo") sobre algo coberto pelos FATOS DA MARCA, ou insinua que um produto pode ter característica que os fatos negam (ex.: álcool); em comentário público passa de 3 linhas ou expõe detalhe de reclamação/dados (deveria convidar ao direct); tom robótico/corporativo, se apresenta de novo em atendimento em andamento, ignora o histórico, mais de 6 linhas, listas com marcadores, repete a pergunta, fere a persona/regras da marca, ou inventou dica sem base.
+Peça REESCRITA se: com público B2B, a resposta não avança o negócio (não qualifica, não oferece nada da lista de ofertas nem passa o contato comercial/distribuidor) ou soa como telemarketing/pressão, ou PEDE telefone/e-mail/dados da pessoa (proibido: o cliente é quem recebe o contato do comercial); com público B2C, tenta vender volume ou fala de tabela/comercial; hesita ("depende", "eventual", "pode ser que", "veja no rótulo") sobre algo coberto pelos FATOS DA MARCA, ou insinua que um produto pode ter característica que os fatos negam (ex.: álcool); em comentário público passa de 3 linhas ou expõe detalhe de reclamação/dados (deveria convidar ao direct); tom robótico/corporativo, se apresenta de novo em atendimento em andamento, ignora o histórico, mais de 6 linhas, listas com marcadores, repete a pergunta, fere a persona/regras da marca, ou inventou dica sem base.
 Regras extras da marca: ${voice.safety.join("; ") || "nenhuma"}.
+OFERTAS B2B autorizadas: ${voice.offers.join("; ") || "nenhuma"}. Reprove oferta não autorizada (desconto, brinde, amostra grátis, visita) se não estiver na lista.
 Persona: ${voice.persona || "próxima, direta, parceira do food service"}.`,
 `SUPERFÍCIE: ${surface === "comment" ? "comentário público" : "mensagem direta"}
 ${history ? `HISTÓRICO:\n${history}\n` : ""}MENSAGEM: ${message}
