@@ -37,3 +37,15 @@ export async function reprocessDocument(id: string) {
   await sb.from("documents").update({ status: "processing", error: null }).eq("id", id);
   revalidatePath("/aprendizado");
 }
+
+export async function addNote(kind: string, title: string, body: string) {
+  const { sb, active, user } = await getSession();
+  await sb.from("brand_notes").insert({ brand_id: active!.id, kind, title: title.trim() || null, body: body.trim(), created_by: user.id });
+  revalidatePath("/aprendizado");
+}
+
+export async function removeNote(id: string) {
+  const { sb } = await getSession();
+  await sb.from("brand_notes").update({ is_active: false }).eq("id", id);
+  revalidatePath("/aprendizado");
+}
