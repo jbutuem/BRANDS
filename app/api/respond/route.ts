@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getSession } from "@/lib/brand";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { scrubRegex, scrubNames } from "@/lib/scrub";
-import { classify, write, guard, safeReply, type BrandVoice, type Classification } from "@/lib/agents";
+import { classify, write, guard, safeReply, moderationReply, type BrandVoice, type Classification } from "@/lib/agents";
 import { detectUf } from "@/lib/uf";
 import { detectCrisis } from "@/lib/policy";
 
@@ -12,6 +12,7 @@ export const runtime = "nodejs";
 /**
  * POST { text, channel, surface?, contactName?, conversationId?, messageId? }
  * Pipeline: Scrubber → Classificador → Retriever → Redator → Guardião (máx. 2 ciclos).
+ * Mensagem ofensiva: caminho de moderação (resposta de limite), sem Redator.
  * brand_id vem SEMPRE da sessão. Texto bruto e nome nunca são gravados.
  */
 export async function POST(req: Request) {
@@ -38,6 +39,7 @@ export async function POST(req: Request) {
   const surface: "dm" | "comment" = body.surface === "comment" ? "comment" : "dm";
   cls.flags = [...new Set([...(cls.flags ?? []), ...(detectCrisis(clean) ? ["crise" as const] : [])])];
   const severe = (cls.flags ?? []).some((f) => f === "ameaca" || f === "crise" || f === "juridico" || f === "menor");
+  const offensive = (cls.flags ?? []).some((f) => f === "ofensa" || f === "discurso_odio" || f === "sexismo");
 
   // Histórico do atendimento (já anonimizado) — permite continuar a conversa
   let history: { direction: string; content: string }[] = [];
@@ -92,7 +94,11 @@ export async function POST(req: Request) {
   // 3+4. Redator ↔ Guardião (máx. 2 reescritas)
   let draft = "", verdict: Awaited<ReturnType<typeof guard>> = { verdict: "aprovada", reason: "" }, cycles = 0, hint: string | undefined;
   try {
-    for (;;) {
+    // Mensagem ofensiva/preconceituosa: não passa pelo Redator. Sai resposta de limite (uma linha) e recomendação de moderação.
+    if (offensive && !severe) {
+      draft = await moderationReply(voice, cls, clean, surface);
+      verdict = { verdict: "moderacao", reason: `mensagem com ${(cls.flags ?? []).join(", ")}`, escalate_to: null };
+    } else for (;;) {
       draft = await write(voice, cls, clean, ctx, examples, hint, { firstName, history: historyText, surface });
       verdict = await guard(voice, cls, clean, draft, ctx, historyText, surface);
       // Sinal de crise/ameaça/jurídico/menor: nunca sai resposta direta — vai para o SAC com acolhimento neutro.
