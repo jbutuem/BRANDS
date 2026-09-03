@@ -12,7 +12,7 @@ export const runtime = "nodejs";
 /**
  * POST { text, channel, surface?, contactName?, conversationId?, messageId? }
  * Pipeline: Scrubber → Classificador → Retriever → Redator → Guardião (máx. 2 ciclos).
- * Mensagem ofensiva: caminho de moderação (resposta de limite), sem Redator.
+ * Mensagem ofensiva: caminho de moderação. B2B: contato do comercial vai na resposta (não se pede dados da pessoa).
  * brand_id vem SEMPRE da sessão. Texto bruto e nome nunca são gravados.
  */
 export async function POST(req: Request) {
@@ -48,13 +48,15 @@ export async function POST(req: Request) {
     history = h ?? [];
     const prevUf = (await sb.from("conversations").select("region_uf").eq("id", body.conversationId).maybeSingle()).data?.region_uf;
     if (!cls.uf && prevUf) cls.uf = prevUf;
+    const prev = (await sb.from("conversations").select("audience, business_type").eq("id", body.conversationId).maybeSingle()).data;
+    if ((!cls.audience || cls.audience === "indefinido") && prev?.audience && prev.audience !== "indefinido") { cls.audience = prev.audience as "b2b" | "b2c"; cls.business_type = cls.business_type ?? prev.business_type; }
   }
   const historyText = history.length ? history.map((m) => `${m.direction === "in" ? "CLIENTE" : active.name.toUpperCase()}: ${m.content}`).join("\n") : "";
 
   // 2. Retriever — estruturado primeiro, texto depois (RLS + brand da sessão)
   const q = [cls.summary, ...(cls.products ?? [])].filter(Boolean).join(" ") || clean;
   const [voiceRow, prods, dists, chunks, golden, contacts] = await Promise.all([
-    sb.from("brand_settings").select("persona, voice_dos, voice_donts, safety_rules, signature, official_links, brand_facts").eq("brand_id", brandId).maybeSingle(),
+    sb.from("brand_settings").select("persona, voice_dos, voice_donts, safety_rules, signature, official_links, brand_facts, b2b_offers").eq("brand_id", brandId).maybeSingle(),
     sb.rpc("search_products", { p_brand_id: brandId, p_query: (cls.products?.[0] ?? q), p_limit: 6 }),
     cls.uf ? sb.rpc("distributors_by_uf", { p_brand_id: brandId, p_uf: cls.uf }) : Promise.resolve({ data: [] as never[] }),
     sb.rpc("search_chunks", { p_brand_id: brandId, p_query: q, p_limit: 5 }),
@@ -66,7 +68,7 @@ export async function POST(req: Request) {
     name: active.name,
     persona: voiceRow.data?.persona ?? "",
     dos: voiceRow.data?.voice_dos ?? [], donts: voiceRow.data?.voice_donts ?? [], safety: voiceRow.data?.safety_rules ?? [],
-    signature: voiceRow.data?.signature ?? null, links: (voiceRow.data?.official_links as Record<string, string>) ?? {}, facts: voiceRow.data?.brand_facts ?? [],
+    signature: voiceRow.data?.signature ?? null, links: (voiceRow.data?.official_links as Record<string, string>) ?? {}, facts: voiceRow.data?.brand_facts ?? [], offers: voiceRow.data?.b2b_offers ?? [],
   };
   type P = { id: string; name: string; codigo: string | null; line: string | null; packaging: string | null; shelf_life: string | null; units_per_box: number | null; applications: string[]; status: string; ean: string | null };
   type D = { id: string; fantasia: string; cidade: string | null; ufs: string[]; whatsapp: string | null; telefone: string | null; email: string | null };
@@ -91,6 +93,12 @@ export async function POST(req: Request) {
     await admin.rpc("upsert_gap", { p_brand_id: brandId, p_type: g.gap_type, p_detail: g.detail }).then(() => null, () => null);
   }
 
+  // Contato comercial a ser passado ao cliente (B2B): prioriza escopo que cite a UF/cidade, senão o geral
+  type IC = { id: string; kind: string; name: string; email: string | null; whatsapp: string | null; phone: string | null; scope: string | null };
+  const comm = ((contacts.data ?? []) as IC[]).filter((c) => c.kind === "comercial");
+  const pick = comm.find((c) => cls.uf && c.scope && c.scope.toUpperCase().includes(cls.uf)) ?? comm.find((c) => !c.scope || /geral|brasil|nacional/i.test(c.scope)) ?? comm[0];
+  const commercialText = pick ? `${pick.name}${pick.scope ? ` (${pick.scope})` : ""} — ${[pick.whatsapp ? "WhatsApp " + pick.whatsapp : null, pick.email ? "e-mail " + pick.email : null].filter(Boolean).join(", ") || "sem canal cadastrado"}` : "";
+
   // 3+4. Redator ↔ Guardião (máx. 2 reescritas)
   let draft = "", verdict: Awaited<ReturnType<typeof guard>> = { verdict: "aprovada", reason: "" }, cycles = 0, hint: string | undefined;
   try {
@@ -99,7 +107,7 @@ export async function POST(req: Request) {
       draft = await moderationReply(voice, cls, clean, surface);
       verdict = { verdict: "moderacao", reason: `mensagem com ${(cls.flags ?? []).join(", ")}`, escalate_to: null };
     } else for (;;) {
-      draft = await write(voice, cls, clean, ctx, examples, hint, { firstName, history: historyText, surface });
+      draft = await write(voice, cls, clean, ctx, examples, hint, { firstName, history: historyText, surface, commercial: commercialText });
       try { verdict = await guard(voice, cls, clean, draft, ctx, historyText, surface); }
       catch { verdict = cycles < 2 ? { verdict: "reescrita", reason: "revisor ilegível", rewrite_hint: "responda mais curto e simples" } : { verdict: "escalar", reason: "revisor indisponível", escalate_to: "sac" }; }
       // Sinal de crise/ameaça/jurídico/menor: nunca sai resposta direta — vai para o SAC com acolhimento neutro.
@@ -120,12 +128,12 @@ export async function POST(req: Request) {
   let messageId: string = body.messageId ?? "";
   if (!conversationId) {
     const { data: conv, error } = await sb.from("conversations").insert({
-      brand_id: brandId, channel: body.channel ?? "instagram", intent: cls.intent, region_uf: cls.uf, region_city: cls.city, operator_id: user.id, surface, flags: cls.flags ?? [],
+      brand_id: brandId, channel: body.channel ?? "instagram", intent: cls.intent, region_uf: cls.uf, region_city: cls.city, operator_id: user.id, surface, flags: cls.flags ?? [], audience: cls.audience ?? "indefinido", business_type: cls.business_type ?? null,
     }).select("id").single();
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     conversationId = conv.id;
   } else {
-    await sb.from("conversations").update({ last_activity: new Date().toISOString(), status: "aberta", flags: cls.flags ?? [], ...(cls.uf ? { region_uf: cls.uf } : {}), ...(cls.city ? { region_city: cls.city } : {}) }).eq("id", conversationId);
+    await sb.from("conversations").update({ last_activity: new Date().toISOString(), status: "aberta", flags: cls.flags ?? [], ...(cls.audience && cls.audience !== "indefinido" ? { audience: cls.audience, business_type: cls.business_type ?? null } : {}), ...(cls.uf ? { region_uf: cls.uf } : {}), ...(cls.city ? { region_city: cls.city } : {}) }).eq("id", conversationId);
   }
   await sb.from("conversations").update({ summary: (cls.summary || clean).slice(0, 140) }).eq("id", conversationId);
   if (!messageId) {
@@ -146,10 +154,11 @@ export async function POST(req: Request) {
   if (rerr) return NextResponse.json({ error: rerr.message }, { status: 500 });
 
   const esc = verdict.escalate_to ? (contacts.data ?? []).filter((c) => c.kind === verdict.escalate_to) : [];
+  const commercial = (contacts.data ?? []).filter((c) => c.kind === "comercial");
   return NextResponse.json({
     conversationId, messageId, responseId: resp.id, version: resp.version,
-    text: draft, verdict: verdict.verdict, reason: verdict.reason, escalateTo: verdict.escalate_to ?? null, contacts: esc,
-    classification: { intent: cls.intent, uf: cls.uf, sentiment: cls.sentiment, summary: cls.summary, flags: cls.flags ?? [], surface },
+    text: draft, verdict: verdict.verdict, reason: verdict.reason, escalateTo: verdict.escalate_to ?? null, contacts: esc, commercial,
+    classification: { intent: cls.intent, uf: cls.uf, city: cls.city, sentiment: cls.sentiment, summary: cls.summary, flags: cls.flags ?? [], surface, audience: cls.audience ?? "indefinido", businessType: cls.business_type ?? null, businessName: cls.business_name ?? null, leadSignals: cls.lead_signals ?? [], products: cls.products ?? [] },
     sources: { products: P_.map((p) => p.name), distributors: D_.map((d) => d.fantasia), documents: [...new Set(C_.map((c) => c.document_name))] },
     scrub: s.report, cleanText: clean, latencyMs: Date.now() - t0,
   });
