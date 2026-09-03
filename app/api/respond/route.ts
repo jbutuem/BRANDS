@@ -96,7 +96,7 @@ export async function POST(req: Request) {
     }
     // Reprovado pelo Guardião: o rascunho é descartado e o operador recebe uma resposta segura de acolhimento/encaminhamento.
     if (verdict.verdict === "escalar" || verdict.verdict === "bloqueada") {
-      draft = await safeReply(voice, cls, clean, verdict.reason, verdict.escalate_to ?? null, { firstName, history: historyText });
+      draft = await safeReply(voice, cls, clean, verdict.reason, verdict.escalate_to ?? null, P_.length ? P_.map((p) => `- ${p.name} (${p.line ?? ""}, ${p.packaging ?? ""})`).join("\n") : "", { firstName, history: historyText });
     }
   } catch (e) {
     return NextResponse.json({ error: `IA indisponível: ${e instanceof Error ? e.message : e}` }, { status: 502 });
