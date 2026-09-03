@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getSession } from "@/lib/brand";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { scrubRegex, scrubNames } from "@/lib/scrub";
-import { classify, write, guard, type BrandVoice, type Classification } from "@/lib/agents";
+import { classify, write, guard, safeReply, type BrandVoice, type Classification } from "@/lib/agents";
 import { detectUf } from "@/lib/uf";
 
 export const maxDuration = 120;
@@ -49,7 +49,7 @@ export async function POST(req: Request) {
   const q = [cls.summary, ...(cls.products ?? [])].filter(Boolean).join(" ") || clean;
   const [voiceRow, prods, dists, chunks, golden, contacts] = await Promise.all([
     sb.from("brand_settings").select("persona, voice_dos, voice_donts, safety_rules, signature, official_links").eq("brand_id", brandId).maybeSingle(),
-    sb.rpc("search_products", { p_brand_id: brandId, p_query: q, p_limit: 6 }),
+    sb.rpc("search_products", { p_brand_id: brandId, p_query: (cls.products?.[0] ?? q), p_limit: 6 }),
     cls.uf ? sb.rpc("distributors_by_uf", { p_brand_id: brandId, p_uf: cls.uf }) : Promise.resolve({ data: [] as never[] }),
     sb.rpc("search_chunks", { p_brand_id: brandId, p_query: q, p_limit: 5 }),
     sb.from("golden_responses").select("question, answer").eq("brand_id", brandId).textSearch("tsv", q.split(/\s+/).slice(0, 6).join(" | "), { config: "portuguese" }).limit(3),
@@ -93,6 +93,10 @@ export async function POST(req: Request) {
       verdict = await guard(voice, cls, clean, draft, ctx, historyText);
       if (verdict.verdict !== "reescrita" || cycles >= 2) break;
       cycles++; hint = verdict.rewrite_hint ?? verdict.reason;
+    }
+    // Reprovado pelo Guardião: o rascunho é descartado e o operador recebe uma resposta segura de acolhimento/encaminhamento.
+    if (verdict.verdict === "escalar" || verdict.verdict === "bloqueada") {
+      draft = await safeReply(voice, cls, clean, verdict.reason, verdict.escalate_to ?? null, { firstName, history: historyText });
     }
   } catch (e) {
     return NextResponse.json({ error: `IA indisponível: ${e instanceof Error ? e.message : e}` }, { status: 502 });
