@@ -12,7 +12,7 @@ async function saveVoice(formData: FormData) {
   if (role !== "admin" && role !== "brand_manager") return;
   await sb.from("brand_settings").update({
     persona: String(formData.get("persona") ?? ""),
-    voice_dos: lines(formData.get("dos")), voice_donts: lines(formData.get("donts")), safety_rules: lines(formData.get("safety")),
+    voice_dos: lines(formData.get("dos")), voice_donts: lines(formData.get("donts")), safety_rules: lines(formData.get("safety")), brand_facts: lines(formData.get("facts")),
     signature: String(formData.get("signature") ?? "") || null, updated_at: new Date().toISOString(),
     official_links: Object.fromEntries(lines(formData.get("links")).map((l) => { const i = l.indexOf(":"); return i > 0 ? [l.slice(0, i).trim().toLowerCase(), l.slice(i + 1).trim()] : [l.trim().toLowerCase(), ""]; }).filter(([k, v]) => k && v)),
   }).eq("brand_id", active!.id);
@@ -70,7 +70,7 @@ export default async function Config({ searchParams }: { searchParams: Promise<{
   const { sb, active, role } = await getSession();
   if (role !== "admin" && role !== "brand_manager") redirect("/workspace");
   const [{ data }, contacts, quick] = await Promise.all([
-    sb.from("brand_settings").select("persona, voice_dos, voice_donts, safety_rules, signature, official_links").eq("brand_id", active!.id).maybeSingle(),
+    sb.from("brand_settings").select("persona, voice_dos, voice_donts, safety_rules, signature, official_links, brand_facts").eq("brand_id", active!.id).maybeSingle(),
     sb.from("internal_contacts").select("id, kind, name, email, whatsapp, scope").eq("brand_id", active!.id).order("kind"),
     sb.from("quick_replies").select("id, category, text, season_from, season_to").eq("brand_id", active!.id).eq("is_active", true).order("category").order("created_at"),
   ]);
@@ -83,6 +83,7 @@ export default async function Config({ searchParams }: { searchParams: Promise<{
       {salvo && <div className="panel" style={{ borderLeft: "4px solid #1b7f4b", padding: "12px 22px" }}>✓ {salvo === "voz" ? "Voz da marca salva. As próximas respostas já usam esta configuração." : salvo === "resposta" ? "Resposta pronta adicionada à biblioteca." : "Contato adicionado."}</div>}
       <form action={saveVoice} className="panel" style={{ display: "grid", gap: 14 }}>
         <label><b>Persona</b><br /><span className="muted">Quem é a marca quando responde. Uma ou duas frases.</span><textarea name="persona" defaultValue={data?.persona ?? ""} style={ta} /></label>
+        <label><b>Fatos da marca</b> <span className="muted">(um por linha — verdades que valem para toda a linha e não estão nos catálogos, ex.: "nenhum produto tem álcool". O Redator responde com segurança e o Guardião reprova hesitação sobre eles)</span><textarea name="facts" defaultValue={(data?.brand_facts ?? []).join("\n")} style={{ ...ta, minHeight: 120 }} /></label>
         <label><b>Faz</b> <span className="muted">(um por linha)</span><textarea name="dos" defaultValue={(data?.voice_dos ?? []).join("\n")} style={ta} /></label>
         <label><b>Não faz</b> <span className="muted">(um por linha)</span><textarea name="donts" defaultValue={(data?.voice_donts ?? []).join("\n")} style={ta} /></label>
         <label><b>Regras de segurança adicionais</b> <span className="muted">(um por linha — as regras base de saúde, alérgenos, álcool, preço, civilidade e prevenção de crise valem sempre)</span><textarea name="safety" defaultValue={(data?.safety_rules ?? []).join("\n")} style={ta} /></label>
