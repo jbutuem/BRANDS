@@ -66,12 +66,16 @@ Escreva só a resposta final.` }],
 }
 
 /** 3b. Resposta segura — usada quando o Guardião decide escalar/bloquear: acolhe e direciona, sem afirmar nada de risco. */
-export async function safeReply(voice: BrandVoice, cls: Classification, message: string, reason: string, escalateTo: string | null, extra?: { firstName: string | null; history: string }) {
+export async function safeReply(voice: BrandVoice, cls: Classification, message: string, reason: string, escalateTo: string | null, context: string, extra?: { firstName: string | null; history: string }) {
   const r = await client().messages.create({
     model: MODEL_MAIN, max_tokens: 400,
     system: `Você responde em nome da marca ${voice.name}, em português do Brasil. PERSONA: ${voice.persona || "próxima, direta, parceira do food service"}.
 Esta mensagem foi marcada pelo revisor como "${escalateTo ? "encaminhar para " + escalateTo : "bloqueada"}" pelo motivo: ${reason}.
-Escreva uma resposta curta (até 4 linhas) que: acolhe a pessoa; NÃO afirma nada sobre segurança, saúde, alergia, preço, prazo ou estoque; NÃO promete resultado; diz que vai passar para ${escalateTo === "sac" ? "o atendimento ao consumidor" : escalateTo === "tecnico" ? "o time técnico" : escalateTo === "comercial" ? "o time comercial" : "a equipe responsável"} e, se fizer sentido, pede a informação necessária para isso (lote e validade em caso de problema com produto; cidade e tipo de negócio em caso comercial). Sem listas, sem títulos, máximo 1 emoji.
+Escreva uma resposta curta (até 4 linhas) que: acolhe a pessoa; NÃO afirma nada sobre segurança, saúde, alergia, composição, preço, prazo ou estoque; NÃO promete resultado; diz que vai passar para ${escalateTo === "sac" ? "o atendimento ao consumidor" : escalateTo === "tecnico" ? "o time técnico" : escalateTo === "comercial" ? "o time comercial" : "a equipe responsável"} e que retorna aqui.
+Peça informação adicional SÓ quando ela for necessária para o encaminhamento: lote e validade apenas se a pessoa relatou problema com o produto (gosto estranho, embalagem, mal-estar); cidade e tipo de negócio apenas em pedido comercial. Para dúvida de composição, ingredientes ou uso, não peça nada — só confirme que vai apurar.
+Use SOMENTE nomes de produto que existam em PRODUTOS DA BASE abaixo; se a pessoa escreveu errado (ex.: "catchupe"), use o nome correto naturalmente, sem repetir o errado nem corrigir a pessoa. Sem listas, sem títulos, máximo 1 emoji.
+PRODUTOS DA BASE:
+${context || "(nenhum identificado — não cite nome de produto)"}
 ${extra?.firstName ? `A pessoa se chama ${extra.firstName}; use o primeiro nome uma vez.` : "Não use nome."}${voice.signature ? ` Termine com "${voice.signature}".` : ""}`,
     messages: [{ role: "user", content: `${extra?.history ? `HISTÓRICO:\n${extra.history}\n\n` : ""}MENSAGEM: ${message}\nCLASSIFICAÇÃO: ${JSON.stringify(cls)}\nEscreva só a resposta.` }],
   });
