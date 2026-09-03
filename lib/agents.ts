@@ -13,11 +13,34 @@ export type Classification = {
 export type BrandVoice = { name: string; persona: string; dos: string[]; donts: string[]; safety: string[]; signature: string | null; links: Record<string, string> };
 export type Verdict = { verdict: "aprovada" | "reescrita" | "redirecionar" | "escalar" | "bloqueada" | "moderacao"; reason: string; escalate_to?: "comercial" | "tecnico" | "sac" | null; rewrite_hint?: string };
 
+/** Extrai e repara JSON vindo do modelo: pega o primeiro {...}, escapa quebras de linha dentro de strings. */
+function parseJsonLoose<T>(text: string): T {
+  let t = text.replace(/```json|```/g, "").trim();
+  const a = t.indexOf("{"), b = t.lastIndexOf("}");
+  if (a >= 0 && b > a) t = t.slice(a, b + 1);
+  try { return JSON.parse(t) as T; } catch { /* tenta reparar */ }
+  let out = "", inStr = false, esc = false;
+  for (const ch of t) {
+    if (esc) { out += ch; esc = false; continue; }
+    if (ch === "\\") { out += ch; esc = true; continue; }
+    if (ch === '"') { inStr = !inStr; out += ch; continue; }
+    if (inStr && (ch === "\n" || ch === "\r")) { out += "\\n"; continue; }
+    if (inStr && ch === "\t") { out += "\\t"; continue; }
+    out += ch;
+  }
+  return JSON.parse(out) as T;
+}
+
 async function json<T>(model: string, system: string, user: string, max = 1200): Promise<T> {
   const r = await client().messages.create({ model, max_tokens: max, system, messages: [{ role: "user", content: user }] });
   const text = r.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("");
-  const clean = text.replace(/```json|```/g, "").trim();
-  return JSON.parse(clean) as T;
+  try { return parseJsonLoose<T>(text); } catch { /* segunda tentativa: pede só o JSON */ }
+  const r2 = await client().messages.create({ model, max_tokens: max, system, messages: [
+    { role: "user", content: user }, { role: "assistant", content: text },
+    { role: "user", content: "Sua resposta não é JSON válido. Repita SOMENTE o objeto JSON, em uma única linha, sem quebras de linha dentro dos textos, sem comentários." },
+  ] });
+  const text2 = r2.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("");
+  return parseJsonLoose<T>(text2);
 }
 
 /** 1. Classificador (rápido). Também devolve nomes próprios para o Scrubber. */
@@ -112,7 +135,7 @@ Escreva só a resposta, sem emoji, sem assinatura.`,
 /** 4. Guardião — tom de voz + segurança + civilidade. */
 export function guard(voice: BrandVoice, cls: Classification, message: string, draft: string, context: string, history = "", surface: "dm" | "comment" = "dm") {
   return json<Verdict>(MODEL_MAIN,
-`Você é o revisor final das respostas da marca ${voice.name} nas redes sociais. Responda SOMENTE com JSON válido:
+`Você é o revisor final das respostas da marca ${voice.name} nas redes sociais. Responda SOMENTE com JSON válido, em UMA linha, sem quebras de linha dentro dos textos:
 {"verdict":"aprovada|reescrita|redirecionar|escalar|bloqueada","reason":"motivo curto","escalate_to":"comercial|tecnico|sac|null","rewrite_hint":"instrução objetiva para o redator, se reescrita"}
 
 ORDEM DE DECISÃO: aprovada → reescrita → redirecionar → escalar → bloqueada. Use o degrau mais baixo que resolva.
