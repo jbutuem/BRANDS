@@ -18,12 +18,18 @@ export async function POST(req: Request) {
     const { data: m } = r ? await admin.from("messages").select("content").eq("id", r.message_id).maybeSingle() : { data: null };
     if (r && m) await admin.from("golden_responses").insert({ brand_id: active.id, question: m.content, answer: r.content, intent: (r.classifier_out as { intent?: string })?.intent ?? null, promoted_by: user.id });
   }
+  // Copiar = enviada: a resposta (já anonimizada) entra no fio do atendimento
   if (kind === "copiada" || kind === "enviada") {
     const admin = supabaseAdmin();
     const { data: r } = await admin.from("responses").select("message_id").eq("id", responseId).maybeSingle();
     if (r) {
       const { data: m } = await admin.from("messages").select("conversation_id").eq("id", r.message_id).maybeSingle();
-      if (m) await sb.from("conversations").update({ status: "respondida", updated_at: new Date().toISOString() }).eq("id", m.conversation_id);
+      if (m) {
+        const { data: full } = await admin.from("responses").select("content, brand_id").eq("id", responseId).maybeSingle();
+        const { data: dup } = await sb.from("messages").select("id").eq("response_id", responseId).maybeSingle();
+        if (full && !dup) await sb.from("messages").insert({ conversation_id: m.conversation_id, brand_id: full.brand_id, direction: "out", content: full.content, response_id: responseId });
+        await sb.from("conversations").update({ status: "respondida", updated_at: new Date().toISOString(), last_activity: new Date().toISOString() }).eq("id", m.conversation_id);
+      }
     }
   }
   return NextResponse.json({ ok: true });
