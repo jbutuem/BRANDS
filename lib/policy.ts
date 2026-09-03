@@ -24,7 +24,17 @@ CIVILIDADE (obrigatório, sem exceção)
 
 export const CRISIS_SIGNALS = ["procon", "advogado", "advogada", "processo", "processar", "justiça", "imprensa", "jornal", "reportagem", "vou expor", "expor vocês", "viralizar", "denúncia", "denunciar", "anvisa", "vigilância sanitária", "intoxica", "passei mal", "passou mal", "hospital", "vômito", "diarreia", "corpo estranho", "cabelo no", "inseto", "mofo", "estufad", "vencid", "recall", "boicot", "cancelar a marca"];
 
-export type Flag = "ofensa" | "discurso_odio" | "ameaca" | "crise" | "juridico" | "saude" | "menor";
+export type Flag = "ofensa" | "discurso_odio" | "sexismo" | "ameaca" | "crise" | "juridico" | "saude" | "menor";
+
+export const MODERATION_RULES = `
+MODERAÇÃO — resposta de limite (quando a mensagem é ofensiva, machista, preconceituosa ou de ódio)
+- Objetivo: marcar posição em UMA linha, com classe, e não dar palco. Silêncio parece concordância; discussão dá audiência.
+- NÃO cite nem parafraseie a frase ofensiva. NÃO dê sermão, NÃO explique por que é errado, NÃO use humor, NÃO ironize.
+- NÃO fale de produto, promoção, receita ou "puxe papo" na mesma resposta. Nada de emoji, nada de assinatura.
+- Grau leve (piada machista, deboche, xingamento sem alvo de grupo): 1 a 2 linhas, firme e cordial. Ex.: "Por aqui a gente fala de molho com respeito por todo mundo. Quando quiser trocar ideia sobre ketchup, estou aqui."
+- Grau grave (racismo, homofobia, transfobia, xenofobia, capacitismo, ódio religioso, ameaça, sexualização): UMA frase seca, sem abertura para conversa. Ex.: "Esse tipo de comentário não tem espaço por aqui." Ou não responder e apenas moderar.
+- Responda UMA vez. Se a pessoa insistir, não responda mais.
+`;
 
 export function detectCrisis(text: string): boolean {
   const t = text.toLowerCase();
