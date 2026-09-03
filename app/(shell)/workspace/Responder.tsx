@@ -64,7 +64,7 @@ export function Responder({ brandName }: { brandName: string }) {
   async function saveLabel() { if (conv) { await setLabel(conv.id, label); refreshOpen(); } }
 
   const scrubbed = res ? Object.values(res.scrub).reduce((a, b) => a + b, 0) : 0;
-  const badge = res ? ({ aprovada: ["#1b7f4b", "aprovada pelo guardião"], reescrita: ["#8a6d00", "reescrita e aprovada"], escalar: ["#b3261e", "encaminhar"], bloqueada: ["#b3261e", "bloqueada"] } as Record<string, string[]>)[res.verdict] : null;
+  const badge = res ? ({ aprovada: ["#1b7f4b", "aprovada pelo guardião"], reescrita: ["#8a6d00", "reescrita e aprovada"], escalar: ["#b3261e", "encaminhar — resposta de acolhimento"], bloqueada: ["#b3261e", "bloqueada — resposta de acolhimento"] } as Record<string, string[]>)[res.verdict] : null;
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "240px 1fr 280px", gap: 16, alignItems: "start" }}>
@@ -124,10 +124,10 @@ export function Responder({ brandName }: { brandName: string }) {
               <span className="muted">· {INTENT[res.classification.intent] ?? res.classification.intent}{res.classification.uf ? ` · ${res.classification.uf}` : ""} · v{res.version} · {(res.latencyMs / 1000).toFixed(1)}s</span>
               {scrubbed > 0 && <span className="muted">· {scrubbed} dado(s) pessoal(is) fora do banco</span>}
             </div>
-            {res.verdict !== "aprovada" && res.verdict !== "reescrita" && <p className="error" style={{ marginBottom: 10 }}>{res.reason}</p>}
+            {res.verdict !== "aprovada" && res.verdict !== "reescrita" && <p className="error" style={{ marginBottom: 10 }}>O guardião não aprovou uma resposta direta ({res.reason}). Abaixo vai só o acolhimento e o encaminhamento — o assunto em si fica com {res.escalateTo ?? "a equipe responsável"}.</p>}
             <div style={{ whiteSpace: "pre-wrap", fontSize: 16, lineHeight: 1.55, padding: "4px 0 14px" }}>{res.text}</div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-              <button className="btn" onClick={copy} disabled={res.verdict === "bloqueada"}>{fb === "copiada" ? "Copiado ✓ (registrado no atendimento)" : "Copiar e registrar"}</button>
+              <button className="btn" onClick={copy}>{fb === "copiada" ? "Copiado ✓ (registrado no atendimento)" : "Copiar e registrar"}</button>
               <button onClick={() => { feedback(res.responseId, "gostei"); setFb("gostei"); }} disabled={!!fb && fb !== "copiada"} style={btn(fb === "gostei")}>👍</button>
               <button onClick={() => { feedback(res.responseId, "nao_gostei"); setFb("nao_gostei"); }} disabled={!!fb && fb !== "copiada"} style={btn(fb === "nao_gostei")}>👎</button>
             </div>
