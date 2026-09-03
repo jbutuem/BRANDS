@@ -7,6 +7,7 @@ export function NavLinks({ canConfigure }: { canConfigure: boolean }) {
   const items = [
     { href: "/workspace", label: "Responder" },
     { href: "/aprendizado", label: "Aprendizado" },
+    { href: "/leads", label: "Leads" },
     ...(canConfigure ? [{ href: "/config", label: "Configuração da marca" }] : []),
   ];
   return (
