@@ -16,6 +16,7 @@ async function saveVoice(formData: FormData) {
     signature: String(formData.get("signature") ?? "") || null, updated_at: new Date().toISOString(),
   }).eq("brand_id", active!.id);
   revalidatePath("/config");
+  redirect("/config?salvo=voz");
 }
 
 async function addContact(formData: FormData) {
@@ -30,6 +31,7 @@ async function addContact(formData: FormData) {
     scope: String(formData.get("scope") ?? "") || null,
   });
   revalidatePath("/config");
+  redirect("/config?salvo=contato");
 }
 
 async function removeContact(formData: FormData) {
@@ -43,7 +45,8 @@ async function removeContact(formData: FormData) {
 const ta: React.CSSProperties = { width: "100%", border: "1px solid var(--line)", borderRadius: 6, padding: 10, minHeight: 70, resize: "vertical" };
 const inp: React.CSSProperties = { border: "1px solid var(--line)", borderRadius: 6, padding: 8 };
 
-export default async function Config() {
+export default async function Config({ searchParams }: { searchParams: Promise<{ salvo?: string }> }) {
+  const { salvo } = await searchParams;
   const { sb, active, role } = await getSession();
   if (role !== "admin" && role !== "brand_manager") redirect("/workspace");
   const [{ data }, contacts] = await Promise.all([
@@ -55,6 +58,7 @@ export default async function Config() {
       <h2>Configuração da marca</h2>
       <p className="lede">Como {active!.name} fala, o que nunca diz, quais regras extras o guardião aplica e para quem encaminhar.</p>
 
+      {salvo && <div className="panel" style={{ borderLeft: "4px solid #1b7f4b", padding: "12px 22px" }}>✓ {salvo === "voz" ? "Voz da marca salva. As próximas respostas já usam esta configuração." : "Contato adicionado."}</div>}
       <form action={saveVoice} className="panel" style={{ display: "grid", gap: 14 }}>
         <label><b>Persona</b><br /><span className="muted">Quem é a marca quando responde. Uma ou duas frases.</span><textarea name="persona" defaultValue={data?.persona ?? ""} style={ta} /></label>
         <label><b>Faz</b> <span className="muted">(um por linha)</span><textarea name="dos" defaultValue={(data?.voice_dos ?? []).join("\n")} style={ta} /></label>
