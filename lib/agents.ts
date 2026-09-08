@@ -10,9 +10,10 @@ export type Classification = {
   intent: Intent; products: string[]; uf: string | null; city: string | null;
   sentiment: "positivo" | "neutro" | "negativo"; personal_names: string[]; summary: string; flags?: Flag[];
   audience?: "b2c" | "b2b" | "indefinido"; business_type?: string | null; business_name?: string | null; lead_signals?: string[]; substance?: "vaga" | "media" | "detalhada";
+  reacao_apenas?: boolean; emoji_sugerido?: string | null;
 };
 export type BrandVoice = { name: string; persona: string; dos: string[]; donts: string[]; safety: string[]; signature: string | null; links: Record<string, string>; facts: string[]; offers: string[] };
-export type Verdict = { verdict: "aprovada" | "reescrita" | "redirecionar" | "escalar" | "bloqueada" | "moderacao"; reason: string; escalate_to?: "comercial" | "tecnico" | "sac" | null; rewrite_hint?: string };
+export type Verdict = { verdict: "aprovada" | "reescrita" | "redirecionar" | "escalar" | "bloqueada" | "moderacao" | "reacao"; reason: string; escalate_to?: "comercial" | "tecnico" | "sac" | null; rewrite_hint?: string };
 
 /** Extrai e repara JSON vindo do modelo: pega o primeiro {...}, escapa quebras de linha dentro de strings. */
 function parseJsonLoose<T>(text: string): T {
@@ -48,16 +49,17 @@ async function json<T>(model: string, system: string, user: string, max = 1200):
 export function classify(brand: string, text: string) {
   return json<Classification>(MODEL_FAST,
 `Você classifica mensagens recebidas nas redes sociais da marca ${brand} (food service, Brasil). Responda SOMENTE com JSON válido, sem comentários:
-{"intent":"produto|onde_comprar|tecnica|engajamento|reclamacao|risco|outro","products":["nomes de produtos citados"],"uf":"UF em 2 letras ou null","city":"cidade ou null","sentiment":"positivo|neutro|negativo","personal_names":["nomes de PESSOAS citados no texto, nunca marcas ou produtos"],"summary":"o que a pessoa quer, em uma frase","flags":["zero ou mais de: ofensa, discurso_odio, sexismo, ameaca, crise, juridico, saude, menor"],"audience":"b2c|b2b|indefinido","business_type":"hamburgueria|cafeteria|restaurante|padaria|hotel|bar|distribuidor|revenda|sorveteria|dark kitchen|outro|null","business_name":"nome do estabelecimento se citado, senão null","lead_signals":["sinais de compra: volume, cardápio, tabela, pedido, distribuidor, revenda, meu restaurante etc."],"substance":"vaga|media|detalhada"}
+{"intent":"produto|onde_comprar|tecnica|engajamento|reclamacao|risco|outro","products":["nomes de produtos citados"],"uf":"UF em 2 letras ou null","city":"cidade ou null","sentiment":"positivo|neutro|negativo","personal_names":["nomes de PESSOAS citados no texto, nunca marcas ou produtos"],"summary":"o que a pessoa quer, em uma frase","flags":["zero ou mais de: ofensa, discurso_odio, sexismo, ameaca, crise, juridico, saude, menor"],"audience":"b2c|b2b|indefinido","business_type":"hamburgueria|cafeteria|restaurante|padaria|hotel|bar|distribuidor|revenda|sorveteria|dark kitchen|outro|null","business_name":"nome do estabelecimento se citado, senão null","lead_signals":["sinais de compra: volume, cardápio, tabela, pedido, distribuidor, revenda, meu restaurante etc."],"substance":"vaga|media|detalhada","reacao_apenas":true|false,"emoji_sugerido":"❤️|👍|🔥|🙌|😊|null"}
 Regras: "risco" = saúde, alergia grave, intoxicação, menor de idade, ameaça, pedido de dado pessoal. "reclamacao" = produto com defeito, atraso, atendimento ruim, não encontrar o produto com irritação. "tecnica" = como usar, rendimento, conservação, tabela nutricional, alérgenos.
 Flags: "ofensa" = xingamento pesado, palavrão ou deboche dirigido À MARCA OU À EQUIPE (ex.: "bando de incompetentes", "vão à m..."). NÃO marque ofensa para crítica ao produto ou insatisfação, mesmo seca ou grosseira ("porcaria", "horrível", "não presta", "péssimo", "lixo de molho") — isso é reclamação, e a intenção deve ser reclamacao; "discurso_odio" = preconceito ou ataque a grupo (raça, cor, etnia, orientação sexual, identidade de gênero, religião, deficiência, origem regional, corpo); "sexismo" = machismo, objetificação ou sexualização de mulheres, insinuação sexual, comparação de pessoas a objetos/produtos (ex.: "melhor que pegar uma rapariga", "gostosa"), piada de cunho sexual — mesmo em tom de brincadeira; quando houver qualquer uma dessas, a intenção NÃO é engajamento; "ameaca" = ameaça a pessoas ou à marca; "crise" = menção a Procon, advogado, processo, imprensa, expor/viralizar, Anvisa, intoxicação, mal-estar, corpo estranho, produto vencido/estufado, recall, boicote; "juridico" = pedido de indenização/compensação; "saude" = pergunta de segurança alimentar/alergia/gestante/criança; "menor" = indícios de menor de idade.
 Substância: "vaga" = poucas palavras sem informação útil ("porcaria", "top", "😡", "não gostei"); "media" = traz um dado (produto, cidade, situação); "detalhada" = contexto completo ou várias perguntas.
-Público: "b2b" = fala como dono/gestor/chef/comprador de um negócio (restaurante, cafeteria, hamburgueria, padaria, hotel, bar, distribuidor, revenda, food truck, dark kitchen), cita cardápio, volume, pedido, fornecedor, tabela, CNPJ; "b2c" = consumidor final (comeu, comprou no mercado, quer receita em casa, elogio pessoal); "indefinido" = não dá para saber. Na dúvida entre b2c e b2b, use "indefinido".`,
+Público: "b2b" = fala como dono/gestor/chef/comprador de um negócio (restaurante, cafeteria, hamburgueria, padaria, hotel, bar, distribuidor, revenda, food truck, dark kitchen), cita cardápio, volume, pedido, fornecedor, tabela, CNPJ; "b2c" = consumidor final (comeu, comprou no mercado, quer receita em casa, elogio pessoal); "indefinido" = não dá para saber. Na dúvida entre b2c e b2b, use "indefinido".
+"reacao_apenas": true SOMENTE quando a mensagem é puro elogio/entusiasmo sem nada para responder — só emoji(s), "❤️", "Amei", "Perfeito", "Top demais", "🔥🔥🔥" — sem pergunta, sem produto citado, sem reclamação, sentimento positivo ou neutro. Se houver qualquer dúvida, pedido, produto ou reclamação, é false. "emoji_sugerido": um emoji entre ❤️ 👍 🔥 🙌 😊 que combine com o tom do comentário, ou null se reacao_apenas for false.`,
     text);
 }
 
 /** 3. Redator — escreve como a marca. */
-export async function write(voice: BrandVoice, cls: Classification, message: string, context: string, examples: string, hint?: string, extra?: { firstName: string | null; history: string; surface?: "dm" | "comment"; commercial?: string }) {
+export async function write(voice: BrandVoice, cls: Classification, message: string, context: string, examples: string, hint?: string, extra?: { firstName: string | null; history: string; surface?: "dm" | "comment"; commercial?: string; vip?: string | null }) {
   const r = await client().messages.create({
     model: MODEL_MAIN, max_tokens: 700,
     system: `Você responde, em nome da marca ${voice.name}, mensagens de clientes e leads nas redes sociais (Instagram/Facebook/WhatsApp), em português do Brasil.
@@ -96,6 +98,7 @@ ${CIVILITY_RULES}
 ${EMOJI_RULES}
 ${NO_PLACEHOLDER_RULE}
 ${extra?.firstName ? `- A pessoa se chama ${extra.firstName}: use o primeiro nome UMA vez, de forma natural (não em toda frase).` : "- Você não sabe o nome da pessoa: não invente nem use apelidos."}
+${extra?.vip ? `- PESSOA CONHECIDA DA MARCA: ${extra.vip}. Trate com a cordialidade e o tom institucional adequados a quem já é próximo da marca — não como cliente anônimo, não peça informações que ela obviamente já sabe (não pergunte cidade, não explique onde comprar, não trate como lead). Pode reconhecer o vínculo dela com a marca de forma natural, sem exagero.` : ""}
 ${extra?.history ? "- Esta é a CONTINUAÇÃO de um atendimento. Não se apresente de novo, não repita o que já foi dito e responda ao que a pessoa acabou de dizer, usando o que ela já informou antes." : ""}`,
     messages: [{ role: "user", content:
 `${extra?.history ? `HISTÓRICO DO ATENDIMENTO:\n${extra.history}\n\n` : ""}NOVA MENSAGEM DO CLIENTE (já anonimizada):
@@ -113,7 +116,7 @@ Escreva só a resposta final.` }],
 }
 
 /** 3b. Resposta segura — usada quando o Guardião decide escalar/bloquear: acolhe e direciona, sem afirmar nada de risco. */
-export async function safeReply(voice: BrandVoice, cls: Classification, message: string, reason: string, escalateTo: string | null, context: string, extra?: { firstName: string | null; history: string; surface?: "dm" | "comment"; mode?: "escalar" | "redirecionar" | "bloqueada" }) {
+export async function safeReply(voice: BrandVoice, cls: Classification, message: string, reason: string, escalateTo: string | null, context: string, extra?: { firstName: string | null; history: string; surface?: "dm" | "comment"; mode?: "escalar" | "redirecionar" | "bloqueada"; vip?: string | null }) {
   const r = await client().messages.create({
     model: MODEL_MAIN, max_tokens: 400,
     system: `Você responde em nome da marca ${voice.name}, em português do Brasil. PERSONA: ${voice.persona || "próxima, direta, parceira do food service"}.
@@ -130,10 +133,10 @@ ${NO_PLACEHOLDER_RULE}
 FATOS DA MARCA (pode afirmar com segurança): ${voice.facts.length ? voice.facts.join(" | ") : "nenhum"}
 LINKS OFICIAIS: ${voice.links && Object.keys(voice.links).length ? Object.entries(voice.links).map(([k, v]) => `${k}: ${v}`).join(" · ") : "(nenhum cadastrado — não cite link)"}
 Peça informação adicional SÓ quando ela for necessária para o encaminhamento: lote e validade apenas se a pessoa relatou problema com o produto (gosto estranho, embalagem, mal-estar); cidade e tipo de negócio apenas em pedido comercial. Para dúvida de composição, ingredientes ou uso, não peça nada — só confirme que vai apurar.
-Use SOMENTE nomes de produto que existam em PRODUTOS DA BASE abaixo; se a pessoa escreveu errado (ex.: "catchupe"), use o nome correto naturalmente, sem repetir o errado nem corrigir a pessoa. Sem listas, sem títulos.
+Use SOMENTE nomes de produto que existam em PRODUTOS DA BASE abaixo; se a pessoa escreveu errado (ex.: "catchupe"), use o nome correto naturalmente, sem repetir o errado nem corrigir a pessoa. Sem listas, sem títulos, máximo 1 emoji.
 PRODUTOS DA BASE:
 ${context || "(nenhum identificado — não cite nome de produto)"}
-${extra?.firstName ? `A pessoa se chama ${extra.firstName}; use o primeiro nome uma vez.` : "Não use nome."}${voice.signature ? ` Termine com "${voice.signature}".` : ""}`,
+${extra?.firstName ? `A pessoa se chama ${extra.firstName}; use o primeiro nome uma vez.` : "Não use nome."}${extra?.vip ? ` PESSOA CONHECIDA DA MARCA: ${extra.vip} — trate com cordialidade institucional, não como cliente anônimo.` : ""}${voice.signature ? ` Termine com "${voice.signature}".` : ""}`,
     messages: [{ role: "user", content: `${extra?.history ? `HISTÓRICO:\n${extra.history}\n\n` : ""}MENSAGEM: ${message}\nCLASSIFICAÇÃO: ${JSON.stringify(cls)}\nEscreva só a resposta.` }],
   });
   return r.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("").trim();
