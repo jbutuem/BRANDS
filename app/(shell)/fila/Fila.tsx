@@ -59,11 +59,21 @@ export function Fila({ brandName }: { brandName: string }) {
   }
 
   async function process() {
-    // cada bloco pode começar com uma linha "id: <identificador do tópico no Meta>" — evita duplicar em varreduras futuras
+    // cada bloco pode começar com "id: <numero>" OU com a URL inteira da aba do Meta — evita duplicar em varreduras futuras
     const blocks = bulk.split(/^\s*-{3,}\s*$/m).map((s) => s.trim()).filter(Boolean);
     const parsed = blocks.map((b) => {
-      const m = b.match(/^id:\s*(\S+)\s*\n([\s\S]*)$/i);
-      return m ? { raw: m[2].trim(), externalThreadId: m[1] } : { raw: b, externalThreadId: undefined };
+      const lines = b.split("\n");
+      const first = (lines[0] ?? "").trim();
+      // "id: <numero>" digitado à mão — continua funcionando
+      const explicit = first.match(/^id:\s*(\S+)$/i);
+      if (explicit) return { raw: lines.slice(1).join("\n").trim(), externalThreadId: explicit[1] };
+      // URL inteira colada na primeira linha — extrai o identificador sozinho, sem digitar nada
+      if (/^https?:\/\//.test(first)) {
+        const rest = lines.slice(1).join("\n").trim();
+        const idMatch = first.match(/[?&](?:selected_item_id|item_id|thread_id|comment_id)=([\w.-]+)/i);
+        return { raw: rest || first, externalThreadId: idMatch?.[1] };
+      }
+      return { raw: b.trim(), externalThreadId: undefined };
     }).filter((p) => p.raw);
     if (!parsed.length) return;
     const fresh: Item[] = parsed.map((p) => ({ id: uid(), raw: p.raw, externalThreadId: p.externalThreadId, status: "carregando" }));
@@ -120,7 +130,7 @@ export function Fila({ brandName }: { brandName: string }) {
           <span className="muted">vale para todas as mensagens coladas abaixo</span>
         </div>
         <textarea className="paste" value={bulk} onChange={(e) => setBulk(e.target.value)}
-          placeholder={`Cole várias mensagens recebidas por ${brandName}, uma por bloco, separadas por uma linha com ---\nOpcional: comece o bloco com "id: <id do tópico>" (da URL do Meta) para evitar duplicar em varreduras futuras.\n\nEx.:\nid: 34028236684171030124\ntem álcool? qual o grau?\n---\nnão encontro em Duque de Caxias, RJ`}
+          placeholder={`Cole várias mensagens recebidas por ${brandName}, uma por bloco, separadas por uma linha com ---\nOpcional: cole a URL da aba do Meta como primeira linha do bloco — o identificador do tópico é extraído sozinho, não precisa digitar nada.\n\nEx.:\nhttps://business.facebook.com/latest/inbox/...&selected_item_id=340282366841710301244259604207492832011\ntem álcool? qual o grau?\n---\nnão encontro em Duque de Caxias, RJ`}
           style={{ minHeight: 160 }} disabled={busy} />
         <div style={{ marginTop: 12 }}>
           <button className="btn" onClick={process} disabled={busy || !bulk.trim()}>{busy ? "Gerando…" : "Gerar respostas"}</button>
