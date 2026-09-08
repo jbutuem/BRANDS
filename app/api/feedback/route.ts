@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getSession } from "@/lib/brand";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
-/** POST { responseId, kind: gostei|nao_gostei|copiada|regerada|enviada, comment? } */
+/** POST { responseId, kind: gostei|nao_gostei|copiada|regerada|enviada|reprovada, comment? } */
 export async function POST(req: Request) {
   const { responseId, kind, comment } = await req.json();
   const { sb, user, active, role } = await getSession();
@@ -18,7 +18,15 @@ export async function POST(req: Request) {
     const { data: m } = r ? await admin.from("messages").select("content").eq("id", r.message_id).maybeSingle() : { data: null };
     if (r && m) await admin.from("golden_responses").insert({ brand_id: active.id, question: m.content, answer: r.content, intent: (r.classifier_out as { intent?: string })?.intent ?? null, promoted_by: user.id });
   }
-  // Copiar = enviada: a resposta (já anonimizada) entra no fio do atendimento
+  if (kind === "reprovada") {
+    const admin = supabaseAdmin();
+    const { data: r } = await admin.from("responses").select("message_id").eq("id", responseId).maybeSingle();
+    if (r) {
+      const { data: m } = await admin.from("messages").select("conversation_id").eq("id", r.message_id).maybeSingle();
+      // Reprovado na Fila: encerra o atendimento para não reaparecer nas próximas varreduras.
+      if (m) await sb.from("conversations").update({ status: "encerrada", updated_at: new Date().toISOString() }).eq("id", m.conversation_id);
+    }
+  }
   if (kind === "copiada" || kind === "enviada") {
     const admin = supabaseAdmin();
     const { data: r } = await admin.from("responses").select("message_id").eq("id", responseId).maybeSingle();
