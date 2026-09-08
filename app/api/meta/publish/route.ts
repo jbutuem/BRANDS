@@ -8,7 +8,7 @@ export const maxDuration = 60;
 
 /**
  * POST { conversationId, responseId, text? }
- * Publica no Meta a resposta que o operador liberou. Disparo é SEMPRE humano.
+ * Publica no Meta a resposta que o operador liberou. O disparo é SEMPRE humano.
  * O texto enviado é o que está na tela (o operador pode ter editado).
  */
 export async function POST(req: Request) {
@@ -56,12 +56,14 @@ export async function POST(req: Request) {
   const { data: sec } = await admin.from("channel_secrets").select("access_token").eq("connection_id", conv.channel_connection_id).maybeSingle();
   if (!conn || !sec?.access_token) return NextResponse.json({ error: "canal sem token válido — reconecte em Config › Canais" }, { status: 400 });
 
-  const canal = conv.channel === "instagram" ? "instagram" : "facebook";
+  const isIg = conv.channel === "instagram";
   let target: PublishTarget;
   if (conv.surface === "comment") {
     if (!inbound?.external_id) return NextResponse.json({ error: "comentário original não identificado" }, { status: 400 });
-    target = { channel: canal, surface: "comment", commentId: inbound.external_id };
-  } else if (canal === "instagram") {
+    target = isIg
+      ? { channel: "instagram", surface: "comment", commentId: inbound.external_id }
+      : { channel: "facebook", surface: "comment", commentId: inbound.external_id };
+  } else if (isIg) {
     if (!conn.ig_user_id || !conv.external_author_id) return NextResponse.json({ error: "DM sem destinatário identificado" }, { status: 400 });
     target = { channel: "instagram", surface: "dm", igUserId: conn.ig_user_id, recipientId: conv.external_author_id };
   } else {
@@ -89,8 +91,8 @@ export async function POST(req: Request) {
   } catch (e) {
     const msg = (e instanceof Error ? e.message : String(e)).slice(0, 400);
     await admin.from("responses").update({ send_error: msg }).eq("id", resp.id);
-    // Janela de 24h do Meta: erro comum e recuperável só por outra via.
-    const janela = /outside.*allowed window|24|#10\b/i.test(msg);
+    // Janela de resposta do Meta (24h em DM): erro comum e não recuperável por retry.
+    const janela = /outside.*allowed window|24 ?h|code 10\b/i.test(msg);
     return NextResponse.json({
       error: janela ? `O Meta recusou o envio: a janela de resposta desta conversa expirou. ${msg}` : msg,
     }, { status: 502 });
