@@ -2,7 +2,7 @@
 import { getSession } from "@/lib/brand";
 
 export type PendingItem = {
-  conversationId: string; messageId: string; content: string; channel: string; surface: string;
+  conversationId: string; messageId: string; content: string; channel: string; surface: string; externalUrl: string | null;
   responseId: string | null; version: number | null; text: string | null; verdict: string | null; reason: string | null;
   classification: Record<string, unknown> | null; createdAt: string;
 };
@@ -13,17 +13,17 @@ export async function pendingQueue(): Promise<PendingItem[]> {
   const { data, error } = await sb.rpc("fila_pending", { p_brand_id: active!.id });
   if (error || !data) return [];
   return (data as Array<{
-    conversation_id: string; message_id: string; content: string; channel: string; surface: string;
+    conversation_id: string; message_id: string; content: string; channel: string; surface: string; external_url: string | null;
     response_id: string | null; version: number | null; response_text: string | null; verdict: string | null;
     verdict_reason: string | null; classifier_out: Record<string, unknown> | null; created_at: string;
   }>).map((r) => ({
-    conversationId: r.conversation_id, messageId: r.message_id, content: r.content, channel: r.channel, surface: r.surface,
+    conversationId: r.conversation_id, messageId: r.message_id, content: r.content, channel: r.channel, surface: r.surface, externalUrl: r.external_url,
     responseId: r.response_id, version: r.version, text: r.response_text, verdict: r.verdict, reason: r.verdict_reason,
     classification: r.classifier_out, createdAt: r.created_at,
   }));
 }
 
-export type AwaitingItem = PendingItem & { externalThreadId: string | null };
+export type AwaitingItem = PendingItem & { externalThreadId: string | null };  // externalUrl já vem de PendingItem
 
 /** Aprovadas pelo operador ("Liberar publicação") mas ainda sem confirmação de que saíram de fato no Meta. */
 export async function awaitingPublication(): Promise<AwaitingItem[]> {
@@ -31,11 +31,11 @@ export async function awaitingPublication(): Promise<AwaitingItem[]> {
   const { data, error } = await sb.rpc("fila_awaiting_publish", { p_brand_id: active!.id });
   if (error || !data) return [];
   return (data as Array<{
-    conversation_id: string; message_id: string; content: string; channel: string; surface: string; external_thread_id: string | null;
+    conversation_id: string; message_id: string; content: string; channel: string; surface: string; external_thread_id: string | null; external_url: string | null;
     response_id: string | null; version: number | null; response_text: string | null; verdict: string | null;
     verdict_reason: string | null; classifier_out: Record<string, unknown> | null; updated_at: string;
   }>).map((r) => ({
-    conversationId: r.conversation_id, messageId: r.message_id, content: r.content, channel: r.channel, surface: r.surface,
+    conversationId: r.conversation_id, messageId: r.message_id, content: r.content, channel: r.channel, surface: r.surface, externalUrl: r.external_url,
     externalThreadId: r.external_thread_id,
     responseId: r.response_id, version: r.version, text: r.response_text, verdict: r.verdict, reason: r.verdict_reason,
     classification: r.classifier_out, createdAt: r.updated_at,
