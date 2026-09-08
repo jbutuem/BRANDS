@@ -69,8 +69,30 @@ export function redirectUri() {
   return `${base.replace(/\/$/, "")}/api/meta/oauth/callback`;
 }
 
+/** state assinado: leva a marca ativa e o usuário, e expira em 10 min. Evita CSRF no callback. */
+export const STATE_MAX_AGE_MS = 10 * 60 * 1000;
+
+export function signState(brandId: string, userId: string) {
+  const payload = `${brandId}.${userId}.${Date.now()}`;
+  const sig = crypto.createHmac("sha256", appSecret()).update(payload).digest("hex").slice(0, 32);
+  return Buffer.from(`${payload}.${sig}`).toString("base64url");
+}
+
+export function readState(state: string): { brandId: string; userId: string } | null {
+  try {
+    const [brandId, userId, ts, sig] = Buffer.from(state, "base64url").toString("utf8").split(".");
+    if (!brandId || !userId || !ts || !sig) return null;
+    const expected = crypto.createHmac("sha256", appSecret()).update(`${brandId}.${userId}.${ts}`).digest("hex").slice(0, 32);
+    if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+    if (Date.now() - Number(ts) > STATE_MAX_AGE_MS) return null;
+    return { brandId, userId };
+  } catch {
+    return null;
+  }
+}
+
 export function authorizeUrl(state: string) {
-  const u = new URL("https://www.facebook.com/" + GRAPH_VERSION + "/dialog/oauth");
+  const u = new URL(`https://www.facebook.com/${GRAPH_VERSION}/dialog/oauth`);
   u.searchParams.set("client_id", appId());
   u.searchParams.set("redirect_uri", redirectUri());
   u.searchParams.set("state", state);
@@ -97,7 +119,7 @@ export type MetaPage = {
   instagram_business_account?: { id: string; username?: string };
 };
 
-/** Páginas que o usuário administra, com o token DE PÁGINA (esse não expira quando vem de user token longo). */
+/** Páginas que o usuário administra, com o token DE PÁGINA (não expira quando vem de user token longo). */
 export async function listPages(userToken: string): Promise<MetaPage[]> {
   const r = await graph<{ data: MetaPage[] }>("/me/accounts", {
     token: userToken,
@@ -140,23 +162,16 @@ export type PublishTarget =
 
 /** Publica a resposta aprovada. Devolve o id do item criado no Meta. */
 export async function publish(target: PublishTarget, message: string, pageToken: string): Promise<string> {
-  if (target.channel === "instagram" && target.surface === "comment") {
-    const r = await graph<{ id: string }>(`/${target.commentId}/replies`, { method: "POST", token: pageToken, params: { message } });
+  if (target.surface === "comment") {
+    const path = target.channel === "instagram" ? `/${target.commentId}/replies` : `/${target.commentId}/comments`;
+    const r = await graph<{ id: string }>(path, { method: "POST", token: pageToken, params: { message } });
     return r.id;
   }
-  if (target.channel === "facebook" && target.surface === "comment") {
-    const r = await graph<{ id: string }>(`/${target.commentId}/comments`, { method: "POST", token: pageToken, params: { message } });
-    return r.id;
-  }
-  const node = target.surface === "dm" && target.channel === "instagram" ? target.igUserId : (target as { pageId: string }).pageId;
+  const node = target.channel === "instagram" ? target.igUserId : target.pageId;
   const r = await graph<{ message_id: string }>(`/${node}/messages`, {
     method: "POST",
     token: pageToken,
-    body: {
-      recipient: { id: (target as { recipientId: string }).recipientId },
-      message: { text: message },
-      messaging_type: "RESPONSE",
-    },
+    body: { recipient: { id: target.recipientId }, message: { text: message }, messaging_type: "RESPONSE" },
   });
   return r.message_id;
 }
