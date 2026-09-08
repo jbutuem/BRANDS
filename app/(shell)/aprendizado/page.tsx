@@ -3,6 +3,7 @@ import { Uploader } from "./Uploader";
 import { SearchTest } from "./SearchTest";
 import { DocRow } from "./DocRow";
 import { Notes } from "./Notes";
+import { AutoRefresh } from "./AutoRefresh";
 
 export const dynamic = "force-dynamic";
 
@@ -17,10 +18,12 @@ export default async function Aprendizado() {
     sb.from("document_chunks").select("*", { count: "exact", head: true }).eq("brand_id", active!.id),
     sb.from("brand_notes").select("id, kind, title, body, created_at").eq("brand_id", active!.id).eq("is_active", true).order("created_at", { ascending: false }),
   ]);
+  const pending = (docs.data ?? []).some((d) => d.status !== "ready" && d.status !== "error");
   // key={active.id}: ao trocar de marca, TODO estado de tela (resultados de busca,
   // progresso de upload) é descartado. Nada de uma marca sobrevive na tela da outra.
   return (
     <div key={active!.id}>
+      <AutoRefresh pending={pending} />
       <h2>Aprendizado</h2>
       <p className="lede">Tudo que {active!.name} sabe fica aqui: catálogos, tabelas nutricionais, distribuidores por região e contatos internos para encaminhamento.</p>
 
@@ -45,6 +48,7 @@ export default async function Aprendizado() {
 
       <div className="panel">
         <h3>Documentos</h3>
+        {pending && <p className="muted" style={{ marginBottom: 8 }}>Indexando os documentos recém-enviados — esta lista atualiza sozinha. Só teste perguntas sobre eles depois que o status virar &quot;pronto&quot;.</p>}
         {!docs.data?.length ? <p>Nenhum documento ainda.</p> : (
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
             <thead><tr style={{ textAlign: "left", color: "var(--ink-2)" }}><th style={{ padding: "6px 0" }}>Arquivo</th><th>Status</th><th>Páginas</th><th>Trechos</th><th></th></tr></thead>
