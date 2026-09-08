@@ -12,7 +12,7 @@ type ApiResult = {
 };
 type Item = {
   id: string; raw: string; status: "carregando" | "pronta" | "erro" | "aprovada" | "reprovada";
-  res?: ApiResult; error?: string; externalThreadId?: string;
+  res?: ApiResult; error?: string; externalThreadId?: string; externalUrl?: string;
 };
 
 const INTENT: Record<string, string> = { produto: "produto", onde_comprar: "onde comprar", tecnica: "técnica", engajamento: "engajamento", reclamacao: "reclamação", risco: "risco", outro: "outro" };
@@ -25,7 +25,7 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 function fromPending(p: PendingItem): Item {
   const c = (p.classification ?? {}) as Record<string, unknown>;
   return {
-    id: p.messageId, raw: p.content, status: "pronta",
+    id: p.messageId, raw: p.content, status: "pronta", externalUrl: p.externalUrl ?? undefined,
     res: p.responseId ? {
       conversationId: p.conversationId, messageId: p.messageId, responseId: p.responseId, version: p.version ?? 1,
       text: p.text ?? "", verdict: (p.verdict as ApiResult["verdict"]) ?? "aprovada", reason: p.reason ?? "", escalateTo: null, contacts: [],
@@ -67,25 +67,25 @@ export function Fila({ brandName }: { brandName: string }) {
       // "id: <numero>" digitado à mão — continua funcionando
       const explicit = first.match(/^id:\s*(\S+)$/i);
       if (explicit) return { raw: lines.slice(1).join("\n").trim(), externalThreadId: explicit[1] };
-      // URL inteira colada na primeira linha — extrai o identificador sozinho, sem digitar nada
+      // URL inteira colada na primeira linha — extrai o identificador e guarda o link, sem digitar nada
       if (/^https?:\/\//.test(first)) {
         const rest = lines.slice(1).join("\n").trim();
         const idMatch = first.match(/[?&](?:selected_item_id|item_id|thread_id|comment_id)=([\w.-]+)/i);
-        return { raw: rest || first, externalThreadId: idMatch?.[1] };
+        return { raw: rest || first, externalThreadId: idMatch?.[1], externalUrl: first };
       }
-      return { raw: b.trim(), externalThreadId: undefined };
+      return { raw: b.trim(), externalThreadId: undefined, externalUrl: undefined };
     }).filter((p) => p.raw);
     if (!parsed.length) return;
-    const fresh: Item[] = parsed.map((p) => ({ id: uid(), raw: p.raw, externalThreadId: p.externalThreadId, status: "carregando" }));
+    const fresh: Item[] = parsed.map((p) => ({ id: uid(), raw: p.raw, externalThreadId: p.externalThreadId, externalUrl: p.externalUrl, status: "carregando" }));
     setItems((prev) => [...fresh, ...prev]);
     setBulk(""); setBusy(true);
-    await Promise.allSettled(fresh.map((it) => runOne(it.id, it.raw, it.externalThreadId)));
+    await Promise.allSettled(fresh.map((it) => runOne(it.id, it.raw, it.externalThreadId, undefined, undefined, it.externalUrl)));
     setBusy(false);
   }
 
-  async function runOne(id: string, text: string, externalThreadId?: string, conversationId?: string, messageId?: string) {
+  async function runOne(id: string, text: string, externalThreadId?: string, conversationId?: string, messageId?: string, externalUrl?: string) {
     try {
-      const r = await fetch("/api/respond", { method: "POST", body: JSON.stringify({ text, channel, surface, conversationId, messageId, externalThreadId }) });
+      const r = await fetch("/api/respond", { method: "POST", body: JSON.stringify({ text, channel, surface, conversationId, messageId, externalThreadId, externalUrl }) });
       const j = await r.json();
       if (!r.ok) { setItems((prev) => prev.map((it) => (it.id === id ? { ...it, status: "erro", error: j.error ?? "falha" } : it))); return; }
       setItems((prev) => prev.map((it) => (it.id === id ? { ...it, status: "pronta", res: j, error: undefined } : it)));
@@ -98,7 +98,7 @@ export function Fila({ brandName }: { brandName: string }) {
     if (!it.res) return;
     setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, status: "carregando" } : x)));
     await fetch("/api/feedback", { method: "POST", body: JSON.stringify({ responseId: it.res.responseId, kind: "regerada" }) });
-    await runOne(it.id, it.raw, it.externalThreadId, it.res.conversationId, it.res.messageId);
+    await runOne(it.id, it.raw, it.externalThreadId, it.res.conversationId, it.res.messageId, it.externalUrl);
   }
 
   async function approve(it: Item) {
@@ -152,7 +152,10 @@ export function Fila({ brandName }: { brandName: string }) {
           <div style={{ display: "grid", gap: 10 }}>
             {awaiting.map((a) => (
               <div key={a.conversationId} style={{ borderTop: "1px solid var(--line)", paddingTop: 10 }}>
-                <div className="muted" style={{ fontSize: 13, marginBottom: 4 }}>“{a.content}”{a.externalThreadId ? <span> · id: {a.externalThreadId}</span> : null}</div>
+                <div className="muted" style={{ fontSize: 13, marginBottom: 4 }}>
+                  "{a.content}"
+                  {a.externalUrl && <> · <a href={a.externalUrl} target="_blank" rel="noopener noreferrer">abrir no Meta ↗</a></>}
+                </div>
                 <div style={{ whiteSpace: "pre-wrap", fontSize: a.verdict === "reacao" ? 26 : 14, marginBottom: 8 }}>{a.text}</div>
                 <button className="btn" onClick={() => confirmOne(a.conversationId)}>Confirmar publicado</button>
               </div>
@@ -179,7 +182,10 @@ function Card({ it, onApprove, onReject, onRegenerate, onDismiss, compact }: {
   const badge = it.res ? BADGE[it.res.verdict] : null;
   return (
     <div className="panel" style={{ margin: 0, opacity: compact ? 0.7 : 1, borderLeft: badge ? `4px solid ${badge[0]}` : undefined }}>
-      <div className="muted" style={{ fontSize: 13, marginBottom: 8, whiteSpace: "pre-wrap" }}>“{it.raw}”</div>
+      <div className="muted" style={{ fontSize: 13, marginBottom: 8, whiteSpace: "pre-wrap" }}>
+        "{it.raw}"
+        {it.externalUrl && <> · <a href={it.externalUrl} target="_blank" rel="noopener noreferrer">abrir no Meta ↗</a></>}
+      </div>
 
       {it.status === "carregando" && <p className="muted">Gerando…</p>}
       {it.status === "erro" && <p className="error">{it.error}</p>}
