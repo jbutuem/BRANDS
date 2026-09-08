@@ -37,13 +37,19 @@ export async function GET(req: Request) {
     // Business Login for Instagram: uma autorização = uma conta. Não há Página nem /me/accounts.
     const { token, userId, expiresIn, permissions } = await exchangeCode(code);
 
-    let conta;
+    let conta: { id?: string; user_id?: string; username?: string } = {};
     try {
       conta = await me(token);
     } catch {
-      conta = { id: userId, username: undefined } as { id: string; username?: string };
+      // /me pode falhar por permissão ainda propagando; o user_id do token já basta.
     }
-    const igId = String(conta.user_id ?? conta.id ?? userId);
+
+    /**
+     * Ordem importa. O webhook manda entry.id = ID da conta profissional (IGID),
+     * que é o `user_id` do token e o campo `user_id` do /me — NÃO o `id` do /me,
+     * que é app-scoped e não casa com nada que chega no webhook.
+     */
+    const igId = String(conta.user_id ?? userId ?? conta.id ?? "");
     if (!igId) return back("não consegui identificar a conta do Instagram autorizada");
 
     let subscribeErr: string | null = null;
