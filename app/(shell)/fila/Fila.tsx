@@ -13,6 +13,8 @@ type ApiResult = {
 type Item = {
   id: string; raw: string; status: "carregando" | "pronta" | "erro" | "aprovada" | "reprovada";
   res?: ApiResult; error?: string; externalThreadId?: string; externalUrl?: string;
+  /** veio de canal conectado: publica pela API em vez de copiar */
+  connected?: boolean;
 };
 
 const INTENT: Record<string, string> = { produto: "produto", onde_comprar: "onde comprar", tecnica: "técnica", engajamento: "engajamento", reclamacao: "reclamação", risco: "risco", outro: "outro" };
@@ -25,7 +27,7 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 function fromPending(p: PendingItem): Item {
   const c = (p.classification ?? {}) as Record<string, unknown>;
   return {
-    id: p.messageId, raw: p.content, status: "pronta", externalUrl: p.externalUrl ?? undefined,
+    id: p.messageId, raw: p.content, status: "pronta", externalUrl: p.externalUrl ?? undefined, connected: p.connected,
     res: p.responseId ? {
       conversationId: p.conversationId, messageId: p.messageId, responseId: p.responseId, version: p.version ?? 1,
       text: p.text ?? "", verdict: (p.verdict as ApiResult["verdict"]) ?? "aprovada", reason: p.reason ?? "", escalateTo: null, contacts: [],
@@ -47,6 +49,7 @@ export function Fila({ brandName }: { brandName: string }) {
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [awaiting, setAwaiting] = useState<AwaitingItem[]>([]);
+  const [awaitErr, setAwaitErr] = useState<Record<string, string>>({});
 
   useEffect(() => {
     pendingQueue().then((rows) => { setItems(rows.map(fromPending)); setLoaded(true); });
@@ -56,6 +59,24 @@ export function Fila({ brandName }: { brandName: string }) {
   async function confirmOne(conversationId: string) {
     await confirmPublished(conversationId);
     setAwaiting((prev) => prev.filter((a) => a.conversationId !== conversationId));
+  }
+
+  /** Publica de fato no Meta (comentário ou DM) pelo canal conectado. */
+  async function publishToMeta(conversationId: string, responseId: string, text: string) {
+    const r = await fetch("/api/meta/publish", { method: "POST", body: JSON.stringify({ conversationId, responseId, text }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error ?? "falha ao publicar no Meta");
+    return j.externalId as string;
+  }
+
+  async function publishAwaiting(a: AwaitingItem) {
+    if (!a.responseId) return;
+    try {
+      await publishToMeta(a.conversationId, a.responseId, a.text ?? "");
+      setAwaiting((prev) => prev.filter((x) => x.conversationId !== a.conversationId));
+    } catch (e) {
+      setAwaitErr((prev) => ({ ...prev, [a.conversationId]: e instanceof Error ? e.message : "falha ao publicar" }));
+    }
   }
 
   async function process() {
@@ -94,6 +115,12 @@ export function Fila({ brandName }: { brandName: string }) {
     }
   }
 
+  /** Gera resposta para um item que entrou pelo webhook e ainda não tem sugestão. */
+  async function generate(it: Item) {
+    setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, status: "carregando" } : x)));
+    await runOne(it.id, it.raw, it.externalThreadId, undefined, it.id, it.externalUrl);
+  }
+
   async function regenerate(it: Item) {
     if (!it.res) return;
     setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, status: "carregando" } : x)));
@@ -103,10 +130,22 @@ export function Fila({ brandName }: { brandName: string }) {
 
   async function approve(it: Item) {
     if (!it.res) return;
-    await navigator.clipboard.writeText(it.res.text);
+    // Canal conectado: publica direto pela API. Varredura manual: copia para o operador colar.
+    if (it.connected && it.res.verdict !== "reacao") {
+      setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, status: "carregando" } : x)));
+      try {
+        await publishToMeta(it.res.conversationId, it.res.responseId, it.res.text);
+      } catch (e) {
+        setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, status: "pronta", error: e instanceof Error ? e.message : "falha ao publicar" } : x)));
+        return;
+      }
+    } else {
+      await navigator.clipboard.writeText(it.res.text);
+    }
     await fetch("/api/feedback", { method: "POST", body: JSON.stringify({ responseId: it.res.responseId, kind: "copiada" }) });
-    setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, status: "aprovada" } : x)));
+    setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, status: "aprovada", error: undefined } : x)));
   }
+
   async function reject(it: Item) {
     if (!it.res) return;
     await fetch("/api/feedback", { method: "POST", body: JSON.stringify({ responseId: it.res.responseId, kind: "reprovada" }) });
@@ -140,24 +179,27 @@ export function Fila({ brandName }: { brandName: string }) {
       {!loaded && <p className="muted">Carregando fila…</p>}
       {loaded && pending.length > 0 && (
         <div style={{ display: "grid", gap: 12, marginBottom: 16 }}>
-          {pending.map((it) => <Card key={it.id} it={it} onApprove={approve} onReject={reject} onRegenerate={regenerate} onDismiss={dismiss} />)}
+          {pending.map((it) => <Card key={it.id} it={it} onApprove={approve} onReject={reject} onRegenerate={regenerate} onGenerate={generate} onDismiss={dismiss} />)}
         </div>
       )}
       {loaded && !pending.length && !done.length && <p className="muted">Nenhuma mensagem pendente. Cole acima e clique em Gerar respostas — ou aguarde a próxima varredura.</p>}
 
       {awaiting.length > 0 && (
         <div className="panel" style={{ borderLeft: "4px solid #0a4d8c" }}>
-          <h3 style={{ marginBottom: 4 }}>Aguardando confirmação de publicação ({awaiting.length})</h3>
-          <p className="muted" style={{ marginBottom: 12 }}>Aprovadas e copiadas, mas ainda sem confirmação de que saíram no Meta. Cole no Meta e envie (ou reaja), depois clique em confirmar aqui.</p>
+          <h3 style={{ marginBottom: 4 }}>Aguardando publicação ({awaiting.length})</h3>
+          <p className="muted" style={{ marginBottom: 12 }}>Liberadas pelo operador, mas ainda sem confirmação de que saíram no Meta.</p>
           <div style={{ display: "grid", gap: 10 }}>
             {awaiting.map((a) => (
               <div key={a.conversationId} style={{ borderTop: "1px solid var(--line)", paddingTop: 10 }}>
                 <div className="muted" style={{ fontSize: 13, marginBottom: 4 }}>
-                  "{a.content}"
+                  &quot;{a.content}&quot;
                   {a.externalUrl && <> · <a href={a.externalUrl} target="_blank" rel="noopener noreferrer">abrir no Meta ↗</a></>}
                 </div>
                 <div style={{ whiteSpace: "pre-wrap", fontSize: a.verdict === "reacao" ? 26 : 14, marginBottom: 8 }}>{a.text}</div>
-                <button className="btn" onClick={() => confirmOne(a.conversationId)}>Confirmar publicado</button>
+                {awaitErr[a.conversationId] && <p className="error" style={{ marginBottom: 8 }}>{awaitErr[a.conversationId]}</p>}
+                {a.connected && a.verdict !== "reacao"
+                  ? <button className="btn" onClick={() => publishAwaiting(a)}>Publicar no Meta</button>
+                  : <button className="btn" onClick={() => confirmOne(a.conversationId)}>Confirmar publicado</button>}
               </div>
             ))}
           </div>
@@ -168,7 +210,7 @@ export function Fila({ brandName }: { brandName: string }) {
         <details style={{ marginTop: 8 }}>
           <summary className="muted">Concluídas nesta sessão ({done.length})</summary>
           <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
-            {done.map((it) => <Card key={it.id} it={it} onApprove={approve} onReject={reject} onRegenerate={regenerate} onDismiss={dismiss} compact />)}
+            {done.map((it) => <Card key={it.id} it={it} onApprove={approve} onReject={reject} onRegenerate={regenerate} onGenerate={generate} onDismiss={dismiss} compact />)}
           </div>
         </details>
       )}
@@ -176,19 +218,26 @@ export function Fila({ brandName }: { brandName: string }) {
   );
 }
 
-function Card({ it, onApprove, onReject, onRegenerate, onDismiss, compact }: {
-  it: Item; onApprove: (i: Item) => void; onReject: (i: Item) => void; onRegenerate: (i: Item) => void; onDismiss: (id: string) => void; compact?: boolean;
+function Card({ it, onApprove, onReject, onRegenerate, onGenerate, onDismiss, compact }: {
+  it: Item; onApprove: (i: Item) => void; onReject: (i: Item) => void; onRegenerate: (i: Item) => void;
+  onGenerate: (i: Item) => void; onDismiss: (id: string) => void; compact?: boolean;
 }) {
   const badge = it.res ? BADGE[it.res.verdict] : null;
   return (
     <div className="panel" style={{ margin: 0, opacity: compact ? 0.7 : 1, borderLeft: badge ? `4px solid ${badge[0]}` : undefined }}>
       <div className="muted" style={{ fontSize: 13, marginBottom: 8, whiteSpace: "pre-wrap" }}>
-        "{it.raw}"
+        {it.connected && <span title="chegou pelo canal conectado" style={{ marginRight: 6 }}>🔗</span>}
+        &quot;{it.raw}&quot;
         {it.externalUrl && <> · <a href={it.externalUrl} target="_blank" rel="noopener noreferrer">abrir no Meta ↗</a></>}
       </div>
 
-      {it.status === "carregando" && <p className="muted">Gerando…</p>}
+      {it.status === "carregando" && <p className="muted">Processando…</p>}
       {it.status === "erro" && <p className="error">{it.error}</p>}
+
+      {/* Chegou pelo webhook e ainda não tem sugestão */}
+      {!it.res && it.status === "pronta" && (
+        <button className="btn" onClick={() => onGenerate(it)}>Gerar resposta</button>
+      )}
 
       {it.res && (
         <>
@@ -199,11 +248,13 @@ function Card({ it, onApprove, onReject, onRegenerate, onDismiss, compact }: {
           {it.res.classification.flags?.length > 0 && <p className="muted" style={{ marginBottom: 8, color: "#7a4a00" }}>⚠ {it.res.classification.flags.join(", ")}</p>}
           {it.res.verdict === "reacao" && <p className="muted" style={{ marginBottom: 6 }}>Elogio sem nada específico — clique no emoji do comentário no Meta em vez de escrever.</p>}
           <div style={{ whiteSpace: "pre-wrap", fontSize: it.res.verdict === "reacao" ? 32 : 15, lineHeight: 1.5, marginBottom: 10 }}>{it.res.text}</div>
-          {it.status === "aprovada" && <p style={{ color: "#1b7f4b", fontSize: 13, marginBottom: 8 }}>✓ {it.res.verdict === "reacao" ? "Registrada" : "Liberada — vou publicar"}</p>}
+          {it.status === "aprovada" && <p style={{ color: "#1b7f4b", fontSize: 13, marginBottom: 8 }}>✓ {it.res.verdict === "reacao" ? "Registrada" : it.connected ? "Publicada no Meta" : "Copiada — cole no Meta"}</p>}
           {it.status === "reprovada" && <p className="muted" style={{ fontSize: 13, marginBottom: 8 }}>Reprovada, atendimento encerrado</p>}
           {(it.status === "pronta") && (
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <button className="btn" onClick={() => onApprove(it)}>{it.res.verdict === "reacao" ? "Registrar reação" : "Liberar publicação"}</button>
+              <button className="btn" onClick={() => onApprove(it)}>
+                {it.res.verdict === "reacao" ? "Registrar reação" : it.connected ? "Publicar no Meta" : "Liberar publicação"}
+              </button>
               <button onClick={() => onRegenerate(it)} style={btn()}>Regenerar</button>
               <button onClick={() => onReject(it)} style={btn()}>Reprovar</button>
             </div>
