@@ -12,6 +12,8 @@ export const BRAND_COOKIE = "listening_brand";
  * contra as memberships do usuário (auth_brand_ids via RLS). O cliente não
  * decide a marca; se o cookie apontar para uma marca que o usuário não tem,
  * cai na primeira marca disponível.
+ * Marcas com is_active = false não aparecem aqui (nem no seletor, Responder,
+ * Fila etc.) — é o toggle "Pausar/Reativar" em Organização.
  */
 export async function getSession() {
   const sb = await supabaseServer();
@@ -19,12 +21,12 @@ export async function getSession() {
   if (!user) redirect("/login");
 
   // bootstrap do primeiro admin (no-op depois da primeira vez)
-  const { data: brandsData } = await sb.from("brands").select("id, slug, name, site_url").order("name");
+  const { data: brandsData } = await sb.from("brands").select("id, slug, name, site_url").eq("is_active", true).order("name");
   let brands = (brandsData ?? []) as Brand[];
   if (brands.length === 0) {
     const { data: boot } = await sb.rpc("bootstrap_first_admin");
     if (boot) {
-      const again = await sb.from("brands").select("id, slug, name, site_url").order("name");
+      const again = await sb.from("brands").select("id, slug, name, site_url").eq("is_active", true).order("name");
       brands = (again.data ?? []) as Brand[];
     }
   }
