@@ -10,10 +10,10 @@ export const maxDuration = 120;
 export const runtime = "nodejs";
 
 /**
- * POST { text, channel, surface?, contactName?, conversationId?, messageId? }
+ * POST { text, channel, surface?, contactName?, conversationId?, messageId?, externalThreadId? }
  * Pipeline: Scrubber → Classificador → Retriever → Redator → Guardião (máx. 2 ciclos).
- * Mensagem ofensiva: caminho de moderação. B2B: contato do comercial vai na resposta (não se pede dados da pessoa).
- * Anotações da equipe (brand_notes) entram como fatos, padrões e dicas.
+ * externalThreadId (id do tópico no Meta): reaproveita o atendimento e evita gerar de novo se a
+ * varredura recorrente encontrar a mesma mensagem sem resposta ainda.
  * brand_id vem SEMPRE da sessão. Texto bruto e nome nunca são gravados.
  */
 export async function POST(req: Request) {
@@ -43,14 +43,42 @@ export async function POST(req: Request) {
   // Moderação só para ódio/sexismo, ou ofensa SEM reclamação real (troll). Cliente irritado reclamando segue o fluxo normal (acolher + SAC).
   const offensive = (cls.flags ?? []).some((f) => f === "discurso_odio" || f === "sexismo") || ((cls.flags ?? []).includes("ofensa") && cls.intent !== "reclamacao");
 
+  // externalThreadId (id do tópico no Meta): reaproveita o atendimento em vez de duplicar em varreduras repetidas
+  let conversationIdIn: string | undefined = body.conversationId;
+  let duplicateOf: string | null = null;
+  const externalThreadId: string | undefined = body.externalThreadId ? String(body.externalThreadId).trim() : undefined;
+  if (externalThreadId && !conversationIdIn) {
+    const { data: existing } = await sb.from("conversations").select("id").eq("brand_id", brandId).eq("external_thread_id", externalThreadId).maybeSingle();
+    if (existing) {
+      conversationIdIn = existing.id;
+      const { data: lastIn } = await sb.from("messages").select("id, content").eq("conversation_id", existing.id).eq("direction", "in").order("created_at", { ascending: false }).limit(1).maybeSingle();
+      // mesmo texto da última mensagem deste tópico: não gera de novo, devolve a resposta já pronta
+      if (lastIn && lastIn.content.trim() === clean.trim()) {
+        const { data: lastResp } = await sb.from("responses").select("id, version, content, verdict, verdict_reason, classifier_out").eq("message_id", lastIn.id).order("version", { ascending: false }).limit(1).maybeSingle();
+        if (lastResp) duplicateOf = lastIn.id;
+      }
+    }
+  }
+  if (duplicateOf) {
+    const { data: lastResp } = await sb.from("responses").select("id, version, content, verdict, verdict_reason, classifier_out").eq("message_id", duplicateOf).order("version", { ascending: false }).limit(1).maybeSingle();
+    if (lastResp) {
+      return NextResponse.json({
+        conversationId: conversationIdIn, messageId: duplicateOf, responseId: lastResp.id, version: lastResp.version,
+        text: lastResp.content, verdict: lastResp.verdict, reason: lastResp.verdict_reason, escalateTo: null, contacts: [], commercial: [],
+        classification: { ...(lastResp.classifier_out as object), surface },
+        sources: { products: [], distributors: [], documents: [] }, scrub: {}, cleanText: clean, latencyMs: Date.now() - t0, duplicate: true,
+      });
+    }
+  }
+
   // Histórico do atendimento (já anonimizado) — permite continuar a conversa
   let history: { direction: string; content: string }[] = [];
-  if (body.conversationId) {
-    const { data: h } = await sb.from("messages").select("direction, content").eq("conversation_id", body.conversationId).order("created_at").limit(20);
+  if (conversationIdIn) {
+    const { data: h } = await sb.from("messages").select("direction, content").eq("conversation_id", conversationIdIn).order("created_at").limit(20);
     history = h ?? [];
-    const prevUf = (await sb.from("conversations").select("region_uf").eq("id", body.conversationId).maybeSingle()).data?.region_uf;
+    const prevUf = (await sb.from("conversations").select("region_uf").eq("id", conversationIdIn).maybeSingle()).data?.region_uf;
     if (!cls.uf && prevUf) cls.uf = prevUf;
-    const prev = (await sb.from("conversations").select("audience, business_type").eq("id", body.conversationId).maybeSingle()).data;
+    const prev = (await sb.from("conversations").select("audience, business_type").eq("id", conversationIdIn).maybeSingle()).data;
     if ((!cls.audience || cls.audience === "indefinido") && prev?.audience && prev.audience !== "indefinido") { cls.audience = prev.audience as "b2b" | "b2c"; cls.business_type = cls.business_type ?? prev.business_type; }
   }
   const historyText = history.length ? history.map((m) => `${m.direction === "in" ? "CLIENTE" : active.name.toUpperCase()}: ${m.content}`).join("\n") : "";
@@ -123,7 +151,7 @@ export async function POST(req: Request) {
       if (verdict.verdict !== "reescrita" || cycles >= 2) break;
       cycles++; hint = verdict.rewrite_hint ?? verdict.reason;
     }
-    // Reprovado ou redirecionado pelo Guardião: o rascunho é descartado e sai uma resposta segura.
+    // Reprovado pelo Guardião: o rascunho é descartado e o operador recebe uma resposta segura de acolhimento/encaminhamento.
     if (verdict.verdict === "escalar" || verdict.verdict === "bloqueada" || verdict.verdict === "redirecionar") {
       draft = await safeReply(voice, cls, clean, verdict.reason, (verdict.escalate_to && String(verdict.escalate_to) !== "null") ? verdict.escalate_to : null, P_.length ? P_.map((p) => `- ${p.name} (${p.line ?? ""}, ${p.packaging ?? ""})`).join("\n") : "", { firstName, history: historyText, surface, mode: verdict.verdict });
     }
@@ -132,11 +160,12 @@ export async function POST(req: Request) {
   }
 
   // Persistência — conversa/mensagem via usuário (RLS); response via service role
-  let conversationId: string = body.conversationId ?? "";
+  let conversationId: string = conversationIdIn ?? "";
   let messageId: string = body.messageId ?? "";
   if (!conversationId) {
     const { data: conv, error } = await sb.from("conversations").insert({
       brand_id: brandId, channel: body.channel ?? "instagram", intent: cls.intent, region_uf: cls.uf, region_city: cls.city, operator_id: user.id, surface, flags: cls.flags ?? [], audience: cls.audience ?? "indefinido", business_type: cls.business_type ?? null,
+      external_thread_id: externalThreadId ?? null,
     }).select("id").single();
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     conversationId = conv.id;
