@@ -76,6 +76,16 @@ async function updateRole(formData: FormData) {
   revalidatePath("/organizacao");
 }
 
+async function toggleBrandActive(formData: FormData) {
+  "use server";
+  await requireOrgAdmin();
+  const admin = supabaseAdmin();
+  const brandId = String(formData.get("brand_id"));
+  const next = String(formData.get("next")) === "true";
+  await admin.from("brands").update({ is_active: next }).eq("id", brandId);
+  revalidatePath("/organizacao");
+}
+
 async function removeAccess(formData: FormData) {
   "use server";
   await requireOrgAdmin();
@@ -111,21 +121,32 @@ export default async function Organizacao({ searchParams }: { searchParams: Prom
   return (
     <div>
       <h2>Organização</h2>
-      <p className="lede">Marcas atendidas pela TGT e quem tem acesso a cada uma. Visível só para administradores.</p>
+      <p className="lede">Marcas atendidas pela TGT e quem tem acesso a cada uma. Visível só para administradores. Uma marca pausada some do seletor, do Responder, da Fila e da varredura automática — sem apagar nada; é só ligar/desligar.</p>
 
       {salvo && <div className="panel" style={{ borderLeft: "4px solid #1b7f4b", padding: "12px 22px" }}>✓ {salvo === "marca" ? "Marca criada. Você já é administrador dela." : "Acesso concedido. Se o e-mail era novo, um convite foi enviado para a pessoa definir a senha."}</div>}
 
       <div className="panel">
         <h3>Marcas</h3>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14, marginBottom: 16 }}>
-          <thead><tr style={{ textAlign: "left", color: "var(--ink-2)" }}><th style={{ padding: "6px 0" }}>Marca</th><th>Slug</th><th>Site</th><th>Status</th></tr></thead>
+          <thead><tr style={{ textAlign: "left", color: "var(--ink-2)" }}><th style={{ padding: "6px 0" }}>Marca</th><th>Slug</th><th>Site</th><th>Status</th><th></th></tr></thead>
           <tbody>
             {(brands ?? []).map((b) => (
               <tr key={b.id} style={{ borderTop: "1px solid var(--line)" }}>
                 <td style={{ padding: "6px 0" }}>{b.name}</td>
                 <td className="muted">{b.slug}</td>
                 <td className="muted">{b.site_url ?? "—"}</td>
-                <td className="muted">{b.is_active ? "ativa" : "inativa"}</td>
+                <td>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, color: b.is_active ? "#1b7f4b" : "#8a6d00" }}>
+                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: b.is_active ? "#1b7f4b" : "#8a6d00", display: "inline-block" }} />
+                    {b.is_active ? "ativa — aparece no app e na varredura" : "pausada — some do app e da varredura"}
+                  </span>
+                </td>
+                <td>
+                  <form action={toggleBrandActive}>
+                    <input type="hidden" name="brand_id" value={b.id} /><input type="hidden" name="next" value={String(!b.is_active)} />
+                    <button type="submit" className="muted" style={{ background: "none", border: "1px solid var(--line)", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 13 }}>{b.is_active ? "Pausar" : "Reativar"}</button>
+                  </form>
+                </td>
               </tr>
             ))}
           </tbody>
