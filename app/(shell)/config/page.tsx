@@ -54,6 +54,31 @@ async function removeQuick(formData: FormData) {
   revalidatePath("/config");
 }
 
+async function addVip(formData: FormData) {
+  "use server";
+  const { sb, active, role } = await getSession();
+  if (role !== "admin" && role !== "brand_manager") return;
+  const name = String(formData.get("name") ?? "").trim();
+  if (!name) return;
+  const aliases = String(formData.get("aliases") ?? "").split(",").map((a) => a.trim()).filter(Boolean);
+  await sb.from("brand_vips").insert({
+    brand_id: active!.id, name, aliases,
+    role: String(formData.get("role") ?? "").trim() || null,
+    org: String(formData.get("org") ?? "").trim() || null,
+    notes: String(formData.get("notes") ?? "").trim() || null,
+  });
+  revalidatePath("/config");
+  redirect("/config?salvo=vip");
+}
+
+async function removeVip(formData: FormData) {
+  "use server";
+  const { sb, role } = await getSession();
+  if (role !== "admin" && role !== "brand_manager") return;
+  await sb.from("brand_vips").update({ is_active: false }).eq("id", String(formData.get("id")));
+  revalidatePath("/config");
+}
+
 async function removeContact(formData: FormData) {
   "use server";
   const { sb, role } = await getSession();
@@ -69,10 +94,11 @@ export default async function Config({ searchParams }: { searchParams: Promise<{
   const { salvo } = await searchParams;
   const { sb, active, role } = await getSession();
   if (role !== "admin" && role !== "brand_manager") redirect("/workspace");
-  const [{ data }, contacts, quick] = await Promise.all([
+  const [{ data }, contacts, quick, vips] = await Promise.all([
     sb.from("brand_settings").select("persona, voice_dos, voice_donts, safety_rules, signature, official_links, brand_facts").eq("brand_id", active!.id).maybeSingle(),
     sb.from("internal_contacts").select("id, kind, name, email, whatsapp, scope").eq("brand_id", active!.id).order("kind"),
     sb.from("quick_replies").select("id, category, text, season_from, season_to").eq("brand_id", active!.id).eq("is_active", true).order("category").order("created_at"),
+    sb.from("brand_vips").select("id, name, aliases, role, org, notes").eq("brand_id", active!.id).eq("is_active", true).order("name"),
   ]);
   const CATS: [string, string][] = [["reacoes","Reações"],["boas_vindas","Boas-vindas"],["agradecimento","Obrigado"],["engajamento","Puxar papo"],["direcionamento","Direcionar"],["espera","Espera"],["encerramento","Fechar"],["datas","Datas"]];
   return (
@@ -80,7 +106,7 @@ export default async function Config({ searchParams }: { searchParams: Promise<{
       <h2>Configuração da marca</h2>
       <p className="lede">Como {active!.name} fala, o que nunca diz, quais regras extras o guardião aplica e para quem encaminhar.</p>
 
-      {salvo && <div className="panel" style={{ borderLeft: "4px solid #1b7f4b", padding: "12px 22px" }}>✓ {salvo === "voz" ? "Voz da marca salva. As próximas respostas já usam esta configuração." : salvo === "resposta" ? "Resposta pronta adicionada à biblioteca." : "Contato adicionado."}</div>}
+      {salvo && <div className="panel" style={{ borderLeft: "4px solid #1b7f4b", padding: "12px 22px" }}>✓ {salvo === "voz" ? "Voz da marca salva. As próximas respostas já usam esta configuração." : salvo === "resposta" ? "Resposta pronta adicionada à biblioteca." : salvo === "vip" ? "Pessoa adicionada. Quando o operador informar esse nome, a resposta já sai no tom certo." : "Contato adicionado."}</div>}
       <form action={saveVoice} className="panel" style={{ display: "grid", gap: 14 }}>
         <label><b>Persona</b><br /><span className="muted">Quem é a marca quando responde. Uma ou duas frases.</span><textarea name="persona" defaultValue={data?.persona ?? ""} style={ta} /></label>
         <label><b>Fatos da marca</b> <span className="muted">(um por linha — verdades que valem para toda a linha e não estão nos catálogos, ex.: "nenhum produto tem álcool". O Redator responde com segurança e o Guardião reprova hesitação sobre eles)</span><textarea name="facts" defaultValue={(data?.brand_facts ?? []).join("\n")} style={{ ...ta, minHeight: 120 }} /></label>
@@ -108,6 +134,29 @@ export default async function Config({ searchParams }: { searchParams: Promise<{
           <input name="whatsapp" placeholder="WhatsApp (DDD+número)" style={inp} />
           <input name="scope" placeholder="Escopo (região, linha…)" style={inp} />
           <button className="btn" type="submit">Adicionar</button>
+        </form>
+      </div>
+
+      <div className="panel">
+        <h3>Pessoas da marca</h3>
+        <p style={{ marginBottom: 12 }}>Diretores, time de marketing, imprensa e outras pessoas ligadas ao negócio. Quando o operador informar um desses nomes em &quot;Como a pessoa se chama&quot;, a resposta já trata a pessoa com o tom certo — sem perguntar cidade, sem tratar como cliente anônimo.</p>
+        {vips.data?.length ? vips.data.map((v) => (
+          <form key={v.id} action={removeVip} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "6px 0", borderTop: "1px solid var(--line)" }}>
+            <div style={{ flex: 1 }}>
+              <b>{v.name}</b>{v.role ? ` — ${v.role}` : ""}{v.org ? ` (${v.org})` : ""}
+              {(v.aliases ?? []).length > 0 && <span className="muted"> · também: {v.aliases.join(", ")}</span>}
+              {v.notes && <div className="muted">{v.notes}</div>}
+            </div>
+            <input type="hidden" name="id" value={v.id} /><button type="submit" style={{ background: "none", border: "none", color: "#b3261e", textDecoration: "underline", cursor: "pointer" }}>remover</button>
+          </form>
+        )) : <p className="muted">Nenhuma pessoa cadastrada ainda.</p>}
+        <form action={addVip} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr auto", gap: 8, marginTop: 14, alignItems: "start" }}>
+          <input name="name" placeholder="Nome" required style={inp} />
+          <input name="role" placeholder="Cargo/função" style={inp} />
+          <input name="org" placeholder="Empresa (ex.: Kerry Brasil)" style={inp} />
+          <input name="aliases" placeholder="Apelidos/variações (vírgula)" style={inp} />
+          <button className="btn" type="submit">Adicionar</button>
+          <input name="notes" placeholder="Observação — como tratar (opcional)" style={{ ...inp, gridColumn: "1 / -1" }} />
         </form>
       </div>
 
