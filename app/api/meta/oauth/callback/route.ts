@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { exchangeCode, listPages, readState, subscribePage } from "@/lib/meta";
+import { exchangeCode, me, readState, subscribe } from "@/lib/meta";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -17,7 +17,7 @@ export async function GET(req: Request) {
 
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
-  if (!code || !state) return back("resposta do Meta sem code/state");
+  if (!code || !state) return back("resposta do Instagram sem code/state");
 
   const parsed = readState(state);
   if (!parsed) return back("state inválido ou expirado — refaça a conexão");
@@ -34,76 +34,65 @@ export async function GET(req: Request) {
   if (!member || !["admin", "brand_manager"].includes(member.role)) return back("sem permissão para conectar canais nesta marca");
 
   try {
-    const { token: userToken, expiresIn } = await exchangeCode(code);
-    const pages = await listPages(userToken);
-    if (!pages.length) return back("nenhuma página encontrada nessa conta do Facebook");
+    // Business Login for Instagram: uma autorização = uma conta. Não há Página nem /me/accounts.
+    const { token, userId, expiresIn, permissions } = await exchangeCode(code);
 
-    const expiresAt = expiresIn ? new Date(Date.now() + expiresIn * 1000).toISOString() : null;
-    const conectadas: string[] = [];
-    const falhas: string[] = [];
+    let conta;
+    try {
+      conta = await me(token);
+    } catch {
+      conta = { id: userId, username: undefined } as { id: string; username?: string };
+    }
+    const igId = String(conta.user_id ?? conta.id ?? userId);
+    if (!igId) return back("não consegui identificar a conta do Instagram autorizada");
 
-    for (const page of pages) {
-      const ig = page.instagram_business_account;
-
-      // Uma conexão por superfície: a página (Facebook) e, quando houver, o IG business vinculado.
-      const alvos = [
-        { provider: "facebook", externalId: page.id, display: page.name },
-        ...(ig ? [{ provider: "instagram", externalId: ig.id, display: ig.username ? `@${ig.username}` : page.name }] : []),
-      ];
-
-      let subscribeErr: string | null = null;
-      try {
-        await subscribePage(page.id, page.access_token);
-      } catch (e) {
-        subscribeErr = e instanceof Error ? e.message : String(e);
-        falhas.push(`${page.name}: ${subscribeErr}`);
-      }
-
-      for (const alvo of alvos) {
-        const { data: conn, error: cerr } = await admin
-          .from("channel_connections")
-          .upsert(
-            {
-              brand_id: parsed.brandId,
-              provider: alvo.provider,
-              external_id: alvo.externalId,
-              display_name: alvo.display,
-              status: subscribeErr ? "erro" : "ativa",
-              mode: "sugestao", // humano no meio: nada publica sozinho
-              page_id: page.id,
-              ig_user_id: ig?.id ?? null,
-              subscribed_at: subscribeErr ? null : new Date().toISOString(),
-              last_error: subscribeErr,
-              connected_by: parsed.userId,
-              connected_at: new Date().toISOString(),
-              token_ref: "channel_secrets",
-            },
-            { onConflict: "provider,external_id" }
-          )
-          .select("id")
-          .single();
-        if (cerr || !conn) {
-          falhas.push(`${alvo.display}: ${cerr?.message ?? "falha ao gravar conexão"}`);
-          continue;
-        }
-
-        // Token de página: fora de channel_connections, em tabela sem policy de RLS.
-        const { error: serr } = await admin.from("channel_secrets").upsert({
-          connection_id: conn.id,
-          access_token: page.access_token,
-          token_type: "page",
-          expires_at: expiresAt,
-          scopes: [],
-          updated_at: new Date().toISOString(),
-        });
-        if (serr) falhas.push(`${alvo.display}: token não gravado (${serr.message})`);
-        else conectadas.push(alvo.display);
-      }
+    let subscribeErr: string | null = null;
+    try {
+      await subscribe(token);
+    } catch (e) {
+      subscribeErr = e instanceof Error ? e.message : String(e);
     }
 
-    if (!conectadas.length) return back(falhas.join(" · ").slice(0, 300) || "nada foi conectado");
-    const msg = `${conectadas.join(", ")} conectado(s)` + (falhas.length ? ` — pendências: ${falhas.join(" · ").slice(0, 200)}` : "");
-    return back(msg, true);
+    const display = conta.username ? `@${conta.username}` : igId;
+
+    const { data: conn, error: cerr } = await admin
+      .from("channel_connections")
+      .upsert(
+        {
+          brand_id: parsed.brandId,
+          provider: "instagram",
+          external_id: igId,
+          display_name: display,
+          status: subscribeErr ? "erro" : "ativa",
+          mode: "sugestao", // humano no meio: nada publica sozinho
+          page_id: null,    // este fluxo não usa Página do Facebook
+          ig_user_id: igId,
+          subscribed_at: subscribeErr ? null : new Date().toISOString(),
+          last_error: subscribeErr,
+          connected_by: parsed.userId,
+          connected_at: new Date().toISOString(),
+          token_ref: "channel_secrets",
+        },
+        { onConflict: "provider,external_id" }
+      )
+      .select("id")
+      .single();
+    if (cerr || !conn) return back(cerr?.message ?? "falha ao gravar a conexão");
+
+    // Token fora de channel_connections, em tabela sem policy de RLS.
+    const { error: serr } = await admin.from("channel_secrets").upsert({
+      connection_id: conn.id,
+      access_token: token,
+      token_type: "instagram_user",
+      // Token longo dura 60 dias e é renovável — precisa de rotina de refresh antes disso.
+      expires_at: expiresIn ? new Date(Date.now() + expiresIn * 1000).toISOString() : null,
+      scopes: permissions,
+      updated_at: new Date().toISOString(),
+    });
+    if (serr) return back(`conta identificada mas token não gravado: ${serr.message}`);
+
+    if (subscribeErr) return back(`${display} conectada, mas o webhook não assinou: ${subscribeErr.slice(0, 200)}`);
+    return back(`${display} conectada`, true);
   } catch (e) {
     return back((e instanceof Error ? e.message : String(e)).slice(0, 300));
   }
