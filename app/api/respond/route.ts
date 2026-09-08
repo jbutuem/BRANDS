@@ -66,6 +66,7 @@ export async function POST(req: Request) {
   let conversationIdIn: string | undefined = body.conversationId;
   let duplicateOf: string | null = null;
   const externalThreadId: string | undefined = body.externalThreadId ? String(body.externalThreadId).trim() : undefined;
+  const externalUrl: string | undefined = body.externalUrl ? String(body.externalUrl).trim() : undefined;
   if (externalThreadId && !conversationIdIn) {
     if (surface === "dm") {
       const { data: existing } = await sb.from("conversations").select("id").eq("brand_id", brandId).eq("external_thread_id", externalThreadId).eq("surface", "dm").maybeSingle();
@@ -196,7 +197,7 @@ export async function POST(req: Request) {
   if (!conversationId) {
     const { data: conv, error } = await sb.from("conversations").insert({
       brand_id: brandId, channel: body.channel ?? "instagram", intent: cls.intent, region_uf: cls.uf, region_city: cls.city, operator_id: user.id, surface, flags: cls.flags ?? [], audience: cls.audience ?? "indefinido", business_type: cls.business_type ?? null,
-      external_thread_id: externalThreadId ?? null,
+      external_thread_id: externalThreadId ?? null, external_url: externalUrl ?? null,
     }).select("id").single();
     if (error) {
       // Corrida entre requisições paralelas no mesmo tópico de DM (raro, mas a Fila gera em paralelo):
@@ -212,7 +213,7 @@ export async function POST(req: Request) {
       conversationId = conv.id;
     }
   } else {
-    await sb.from("conversations").update({ last_activity: new Date().toISOString(), status: "aberta", flags: cls.flags ?? [], ...(cls.audience && cls.audience !== "indefinido" ? { audience: cls.audience, business_type: cls.business_type ?? null } : {}), ...(cls.uf ? { region_uf: cls.uf } : {}), ...(cls.city ? { region_city: cls.city } : {}) }).eq("id", conversationId);
+    await sb.from("conversations").update({ last_activity: new Date().toISOString(), status: "aberta", flags: cls.flags ?? [], ...(cls.audience && cls.audience !== "indefinido" ? { audience: cls.audience, business_type: cls.business_type ?? null } : {}), ...(cls.uf ? { region_uf: cls.uf } : {}), ...(cls.city ? { region_city: cls.city } : {}), ...(externalUrl ? { external_url: externalUrl } : {}) }).eq("id", conversationId);
   }
   await sb.from("conversations").update({ summary: (cls.summary || clean).slice(0, 140) }).eq("id", conversationId);
   if (!messageId) {
