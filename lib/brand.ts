@@ -36,6 +36,7 @@ export async function getSession() {
   const wanted = cookieStore.get(BRAND_COOKIE)?.value;
   const active = brands.find((b) => b.slug === wanted) ?? brands[0] ?? null;
   const role = active ? memberships.find((m) => m.brand_id === active.id)?.role ?? null : null;
+  const isAdminAnywhere = memberships.some((m) => m.role === "admin");
 
-  return { sb, user, brands, active, role };
+  return { sb, user, brands, active, role, isAdminAnywhere };
 }
