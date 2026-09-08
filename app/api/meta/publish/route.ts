@@ -8,7 +8,7 @@ export const maxDuration = 60;
 
 /**
  * POST { conversationId, responseId, text? }
- * Publica no Meta a resposta que o operador liberou. O disparo é SEMPRE humano.
+ * Publica no Instagram a resposta que o operador liberou. O disparo é SEMPRE humano.
  * O texto enviado é o que está na tela (o operador pode ter editado).
  */
 export async function POST(req: Request) {
@@ -25,7 +25,7 @@ export async function POST(req: Request) {
   if (!conv) return NextResponse.json({ error: "atendimento não encontrado" }, { status: 404 });
   if (conv.published_at) return NextResponse.json({ error: "esta resposta já foi publicada" }, { status: 409 });
   if (!conv.channel_connection_id) {
-    return NextResponse.json({ error: "atendimento sem canal conectado — este veio de varredura manual, publique pelo app do Meta" }, { status: 400 });
+    return NextResponse.json({ error: "atendimento sem canal conectado — este veio de varredura manual, publique pelo app do Instagram" }, { status: 400 });
   }
 
   const { data: resp } = await sb.from("responses").select("id, content, verdict").eq("id", responseId).maybeSingle();
@@ -64,8 +64,9 @@ export async function POST(req: Request) {
       ? { channel: "instagram", surface: "comment", commentId: inbound.external_id }
       : { channel: "facebook", surface: "comment", commentId: inbound.external_id };
   } else if (isIg) {
-    if (!conn.ig_user_id || !conv.external_author_id) return NextResponse.json({ error: "DM sem destinatário identificado" }, { status: 400 });
-    target = { channel: "instagram", surface: "dm", igUserId: conn.ig_user_id, recipientId: conv.external_author_id };
+    // Business Login for Instagram: o nó é /me, o token já identifica a conta.
+    if (!conv.external_author_id) return NextResponse.json({ error: "DM sem destinatário identificado" }, { status: 400 });
+    target = { channel: "instagram", surface: "dm", recipientId: conv.external_author_id };
   } else {
     if (!conn.page_id || !conv.external_author_id) return NextResponse.json({ error: "DM sem destinatário identificado" }, { status: 400 });
     target = { channel: "facebook", surface: "dm", pageId: conn.page_id, recipientId: conv.external_author_id };
@@ -91,10 +92,10 @@ export async function POST(req: Request) {
   } catch (e) {
     const msg = (e instanceof Error ? e.message : String(e)).slice(0, 400);
     await admin.from("responses").update({ send_error: msg }).eq("id", resp.id);
-    // Janela de resposta do Meta (24h em DM): erro comum e não recuperável por retry.
+    // Janela de resposta (24h em DM): erro comum e não recuperável por retry.
     const janela = /outside.*allowed window|24 ?h|code 10\b/i.test(msg);
     return NextResponse.json({
-      error: janela ? `O Meta recusou o envio: a janela de resposta desta conversa expirou. ${msg}` : msg,
+      error: janela ? `O Instagram recusou o envio: a janela de resposta desta conversa expirou. ${msg}` : msg,
     }, { status: 502 });
   }
 }
