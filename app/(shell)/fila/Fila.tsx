@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { pendingQueue, type PendingItem } from "./actions";
+import { pendingQueue, awaitingPublication, confirmPublished, type PendingItem, type AwaitingItem } from "./actions";
 
 type Contact = { id: string; kind: string; name: string; email: string | null; whatsapp: string | null };
 type ApiResult = {
@@ -46,10 +46,17 @@ export function Fila({ brandName }: { brandName: string }) {
   const [items, setItems] = useState<Item[]>([]);
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [awaiting, setAwaiting] = useState<AwaitingItem[]>([]);
 
   useEffect(() => {
     pendingQueue().then((rows) => { setItems(rows.map(fromPending)); setLoaded(true); });
+    awaitingPublication().then(setAwaiting);
   }, []);
+
+  async function confirmOne(conversationId: string) {
+    await confirmPublished(conversationId);
+    setAwaiting((prev) => prev.filter((a) => a.conversationId !== conversationId));
+  }
 
   async function process() {
     // cada bloco pode começar com uma linha "id: <identificador do tópico no Meta>" — evita duplicar em varreduras futuras
@@ -127,6 +134,22 @@ export function Fila({ brandName }: { brandName: string }) {
         </div>
       )}
       {loaded && !pending.length && !done.length && <p className="muted">Nenhuma mensagem pendente. Cole acima e clique em Gerar respostas — ou aguarde a próxima varredura.</p>}
+
+      {awaiting.length > 0 && (
+        <div className="panel" style={{ borderLeft: "4px solid #0a4d8c" }}>
+          <h3 style={{ marginBottom: 4 }}>Aguardando confirmação de publicação ({awaiting.length})</h3>
+          <p className="muted" style={{ marginBottom: 12 }}>Aprovadas e copiadas, mas ainda sem confirmação de que saíram no Meta. Cole no Meta e envie (ou reaja), depois clique em confirmar aqui.</p>
+          <div style={{ display: "grid", gap: 10 }}>
+            {awaiting.map((a) => (
+              <div key={a.conversationId} style={{ borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+                <div className="muted" style={{ fontSize: 13, marginBottom: 4 }}>“{a.content}”{a.externalThreadId ? <span> · id: {a.externalThreadId}</span> : null}</div>
+                <div style={{ whiteSpace: "pre-wrap", fontSize: a.verdict === "reacao" ? 26 : 14, marginBottom: 8 }}>{a.text}</div>
+                <button className="btn" onClick={() => confirmOne(a.conversationId)}>Confirmar publicado</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {done.length > 0 && (
         <details style={{ marginTop: 8 }}>
