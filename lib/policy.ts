@@ -51,6 +51,14 @@ MODERAÇÃO — resposta de limite (quando a mensagem é ofensiva, machista, pre
 - Reclamação com xingamento NÃO é moderação: é cliente irritado. Nesse caso acolha ("entendo a irritação"), não devolva o tom, e leve para o direct/SAC.
 `;
 
+export const EMOJI_RULES = `
+EMOJIS
+- No máximo 1 emoji por resposta, só quando reforça o tom sem parecer debochado ou sarcástico.
+- Permitidos, com bom senso: 😊 🙂 😉 👍 🙌 ✨ ❤️ 🔥 ☕ 🍹 🍔 🎉
+- PROIBIDOS, mesmo em resposta a comentário engraçado ou "maldade": emojis de careta, língua de fora ou olhos apertados (😝 😜 🤪), risada exagerada (😂 🤣), deboche/ironia (😏), diabinho (😈), choro, raiva ou qualquer emoji que possa parecer mockar o cliente.
+- Na dúvida se um emoji pode soar de deboche, não use nenhum.
+`;
+
 export function detectCrisis(text: string): boolean {
   const t = text.toLowerCase();
   return CRISIS_SIGNALS.some((s) => t.includes(s));
