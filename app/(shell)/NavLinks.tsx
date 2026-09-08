@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-export function NavLinks({ canConfigure }: { canConfigure: boolean }) {
+export function NavLinks({ canConfigure, canManageOrg }: { canConfigure: boolean; canManageOrg?: boolean }) {
   const path = usePathname();
   const items = [
     { href: "/workspace", label: "Responder" },
@@ -10,6 +10,7 @@ export function NavLinks({ canConfigure }: { canConfigure: boolean }) {
     { href: "/aprendizado", label: "Aprendizado" },
     { href: "/leads", label: "Leads" },
     ...(canConfigure ? [{ href: "/config", label: "Configuração da marca" }] : []),
+    ...(canManageOrg ? [{ href: "/organizacao", label: "Organização" }] : []),
   ];
   return (
     <nav className="nav" aria-label="Seções">
