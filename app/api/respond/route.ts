@@ -10,13 +10,9 @@ export const maxDuration = 120;
 export const runtime = "nodejs";
 
 /**
- * POST { text, channel, surface?, contactName?, conversationId?, messageId?, externalThreadId? }
+ * POST { text, channel, conversationId?, messageId? }
  * Pipeline: Scrubber → Classificador → Retriever → Redator → Guardião (máx. 2 ciclos).
- * externalThreadId (id do tópico no Meta): reaproveita o atendimento e evita gerar de novo se a
- * varredura recorrente encontrar a mesma mensagem sem resposta ainda.
- * Elogio puro pode virar sugestão de reação (emoji) em vez de resposta escrita.
- * Pessoa conhecida da marca (contactName casando com brand_vips) recebe tratamento institucional.
- * brand_id vem SEMPRE da sessão. Texto bruto e nome nunca são gravados.
+ * brand_id vem SEMPRE da sessão. Texto bruto nunca é gravado.
  */
 export async function POST(req: Request) {
   const t0 = Date.now();
@@ -62,20 +58,29 @@ export async function POST(req: Request) {
     if (vip) vipContext = `${vip.name}${vip.role ? " — " + vip.role : ""}${vip.org ? ` (${vip.org})` : ""}${vip.notes ? `. ${vip.notes}` : ""}`;
   }
 
-  // externalThreadId (id do tópico no Meta): reaproveita o atendimento em vez de duplicar em varreduras repetidas
+  // externalThreadId (id do tópico no Meta): reaproveita o atendimento em vez de duplicar em varreduras repetidas.
+  // DM: o id identifica UM cliente/conversa — sempre reaproveita. Comentário: o id costuma ser do POST
+  // (o Meta não expõe id por comentário na URL), então vários comentários diferentes podem compartilhar
+  // o mesmo id — só reaproveita quando o TEXTO também bate; senão, cria uma conversa nova (nunca funde
+  // comentários diferentes de pessoas diferentes).
   let conversationIdIn: string | undefined = body.conversationId;
   let duplicateOf: string | null = null;
   const externalThreadId: string | undefined = body.externalThreadId ? String(body.externalThreadId).trim() : undefined;
   if (externalThreadId && !conversationIdIn) {
-    const { data: existing } = await sb.from("conversations").select("id").eq("brand_id", brandId).eq("external_thread_id", externalThreadId).maybeSingle();
-    if (existing) {
-      conversationIdIn = existing.id;
-      const { data: lastIn } = await sb.from("messages").select("id, content").eq("conversation_id", existing.id).eq("direction", "in").order("created_at", { ascending: false }).limit(1).maybeSingle();
-      // mesmo texto da última mensagem deste tópico: não gera de novo, devolve a resposta já pronta
-      if (lastIn && lastIn.content.trim() === clean.trim()) {
-        const { data: lastResp } = await sb.from("responses").select("id, version, content, verdict, verdict_reason, classifier_out").eq("message_id", lastIn.id).order("version", { ascending: false }).limit(1).maybeSingle();
-        if (lastResp) duplicateOf = lastIn.id;
+    if (surface === "dm") {
+      const { data: existing } = await sb.from("conversations").select("id").eq("brand_id", brandId).eq("external_thread_id", externalThreadId).eq("surface", "dm").maybeSingle();
+      if (existing) {
+        conversationIdIn = existing.id;
+        const { data: lastIn } = await sb.from("messages").select("id, content").eq("conversation_id", existing.id).eq("direction", "in").order("created_at", { ascending: false }).limit(1).maybeSingle();
+        if (lastIn && lastIn.content.trim() === clean.trim()) duplicateOf = lastIn.id;
       }
+    } else {
+      const { data: candidates } = await sb.from("conversations").select("id").eq("brand_id", brandId).eq("external_thread_id", externalThreadId).eq("surface", "comment").limit(20);
+      for (const cand of candidates ?? []) {
+        const { data: lastIn } = await sb.from("messages").select("id, content").eq("conversation_id", cand.id).eq("direction", "in").order("created_at", { ascending: false }).limit(1).maybeSingle();
+        if (lastIn && lastIn.content.trim() === clean.trim()) { conversationIdIn = cand.id; duplicateOf = lastIn.id; break; }
+      }
+      // Não achou o mesmo texto entre os comentários deste post: segue para criar uma conversa nova.
     }
   }
   if (duplicateOf) {
@@ -193,8 +198,19 @@ export async function POST(req: Request) {
       brand_id: brandId, channel: body.channel ?? "instagram", intent: cls.intent, region_uf: cls.uf, region_city: cls.city, operator_id: user.id, surface, flags: cls.flags ?? [], audience: cls.audience ?? "indefinido", business_type: cls.business_type ?? null,
       external_thread_id: externalThreadId ?? null,
     }).select("id").single();
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-    conversationId = conv.id;
+    if (error) {
+      // Corrida entre requisições paralelas no mesmo tópico de DM (raro, mas a Fila gera em paralelo):
+      // reaproveita a conversa que a outra requisição acabou de criar em vez de falhar para o operador.
+      if (error.code === "23505" && externalThreadId && surface === "dm") {
+        const { data: existing3 } = await sb.from("conversations").select("id").eq("brand_id", brandId).eq("external_thread_id", externalThreadId).eq("surface", "dm").maybeSingle();
+        if (!existing3) return NextResponse.json({ error: error.message }, { status: 500 });
+        conversationId = existing3.id;
+      } else {
+        return NextResponse.json({ error: error.message }, { status: 500 });
+      }
+    } else {
+      conversationId = conv.id;
+    }
   } else {
     await sb.from("conversations").update({ last_activity: new Date().toISOString(), status: "aberta", flags: cls.flags ?? [], ...(cls.audience && cls.audience !== "indefinido" ? { audience: cls.audience, business_type: cls.business_type ?? null } : {}), ...(cls.uf ? { region_uf: cls.uf } : {}), ...(cls.city ? { region_city: cls.city } : {}) }).eq("id", conversationId);
   }
