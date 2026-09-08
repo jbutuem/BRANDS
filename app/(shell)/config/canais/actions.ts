@@ -2,9 +2,9 @@
 import { revalidatePath } from "next/cache";
 import { getSession } from "@/lib/brand";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { unsubscribePage } from "@/lib/meta";
+import { unsubscribe } from "@/lib/meta";
 
-/** Remove a conexão: cancela a assinatura no Meta e apaga o token. Atendimentos já criados ficam. */
+/** Remove a conexão: cancela a assinatura de webhook e apaga o token. Atendimentos já criados ficam. */
 export async function disconnect(form: FormData) {
   const id = String(form.get("id") ?? "");
   const { sb, active } = await getSession();
@@ -13,7 +13,7 @@ export async function disconnect(form: FormData) {
   // RLS confirma que a conexão é da marca ativa antes de qualquer chamada com service role.
   const { data: conn } = await sb
     .from("channel_connections")
-    .select("id, page_id, provider, external_id")
+    .select("id, provider, external_id")
     .eq("id", id)
     .eq("brand_id", active.id)
     .maybeSingle();
@@ -22,17 +22,9 @@ export async function disconnect(form: FormData) {
   const admin = supabaseAdmin();
   const { data: sec } = await admin.from("channel_secrets").select("access_token").eq("connection_id", conn.id).maybeSingle();
 
-  // Só cancela a assinatura da página se nenhuma outra conexão ainda depender dela
-  // (a página do Facebook e o IG vinculado compartilham o mesmo page_id).
-  if (sec?.access_token && conn.page_id) {
-    const { count } = await admin
-      .from("channel_connections")
-      .select("id", { count: "exact", head: true })
-      .eq("page_id", conn.page_id)
-      .neq("id", conn.id);
-    if (!count) {
-      try { await unsubscribePage(conn.page_id, sec.access_token); } catch { /* já pode estar desassinada */ }
-    }
+  // Business Login for Instagram: a assinatura é por conta, então cancela direto.
+  if (sec?.access_token && conn.provider === "instagram") {
+    try { await unsubscribe(sec.access_token); } catch { /* já pode estar desassinada ou o token expirou */ }
   }
 
   await admin.from("channel_secrets").delete().eq("connection_id", conn.id);
