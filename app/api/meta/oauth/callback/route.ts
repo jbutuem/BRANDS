@@ -1,26 +1,9 @@
 import { NextResponse } from "next/server";
-import crypto from "node:crypto";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { appSecret, exchangeCode, listPages, subscribePage } from "@/lib/meta";
+import { exchangeCode, listPages, readState, subscribePage } from "@/lib/meta";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
-
-const MAX_STATE_AGE_MS = 10 * 60 * 1000;
-
-function readState(state: string): { brandId: string; userId: string } | null {
-  try {
-    const raw = Buffer.from(state, "base64url").toString("utf8");
-    const [brandId, userId, ts, sig] = raw.split(".");
-    if (!brandId || !userId || !ts || !sig) return null;
-    const expected = crypto.createHmac("sha256", appSecret()).update(`${brandId}.${userId}.${ts}`).digest("hex").slice(0, 32);
-    if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
-    if (Date.now() - Number(ts) > MAX_STATE_AGE_MS) return null;
-    return { brandId, userId };
-  } catch {
-    return null;
-  }
-}
 
 function back(msg: string, ok = false) {
   const base = (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "");
@@ -29,8 +12,8 @@ function back(msg: string, ok = false) {
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const error = url.searchParams.get("error_description") ?? url.searchParams.get("error");
-  if (error) return back(error);
+  const erro = url.searchParams.get("error_description") ?? url.searchParams.get("error");
+  if (erro) return back(erro);
 
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
@@ -104,7 +87,7 @@ export async function GET(req: Request) {
           continue;
         }
 
-        // Token de página: fica fora de channel_connections, em tabela sem RLS policy.
+        // Token de página: fora de channel_connections, em tabela sem policy de RLS.
         const { error: serr } = await admin.from("channel_secrets").upsert({
           connection_id: conn.id,
           access_token: page.access_token,
