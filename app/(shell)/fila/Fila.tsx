@@ -15,6 +15,8 @@ type Item = {
   res?: ApiResult; error?: string; externalThreadId?: string; externalUrl?: string;
   /** veio de canal conectado: publica pela API em vez de copiar */
   connected?: boolean;
+  /** atendimento já existente (webhook ou fila persistida) — nunca criar outro */
+  conversationId?: string;
 };
 
 const INTENT: Record<string, string> = { produto: "produto", onde_comprar: "onde comprar", tecnica: "técnica", engajamento: "engajamento", reclamacao: "reclamação", risco: "risco", outro: "outro" };
@@ -27,7 +29,8 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 function fromPending(p: PendingItem): Item {
   const c = (p.classification ?? {}) as Record<string, unknown>;
   return {
-    id: p.messageId, raw: p.content, status: "pronta", externalUrl: p.externalUrl ?? undefined, connected: p.connected,
+    id: p.messageId, raw: p.content, status: "pronta", externalUrl: p.externalUrl ?? undefined,
+    connected: p.connected, conversationId: p.conversationId,
     res: p.responseId ? {
       conversationId: p.conversationId, messageId: p.messageId, responseId: p.responseId, version: p.version ?? 1,
       text: p.text ?? "", verdict: (p.verdict as ApiResult["verdict"]) ?? "aprovada", reason: p.reason ?? "", escalateTo: null, contacts: [],
@@ -115,10 +118,15 @@ export function Fila({ brandName }: { brandName: string }) {
     }
   }
 
-  /** Gera resposta para um item que entrou pelo webhook e ainda não tem sugestão. */
+  /**
+   * Item que chegou pelo webhook e ainda não tem sugestão.
+   * conversationId E messageId vão juntos: sem isso o /api/respond abriria
+   * um atendimento novo e a mensagem ficaria pendurada em duas conversas.
+   */
   async function generate(it: Item) {
+    if (!it.conversationId) return;
     setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, status: "carregando" } : x)));
-    await runOne(it.id, it.raw, it.externalThreadId, undefined, it.id, it.externalUrl);
+    await runOne(it.id, it.raw, it.externalThreadId, it.conversationId, it.id, it.externalUrl);
   }
 
   async function regenerate(it: Item) {
@@ -166,7 +174,7 @@ export function Fila({ brandName }: { brandName: string }) {
           <label className="muted">Onde <select value={surface} onChange={(e) => setSurface(e.target.value as "dm" | "comment")} style={{ marginLeft: 6, padding: 6, borderRadius: 6, border: "1px solid var(--line)" }}>
             <option value="dm">Mensagem direta</option><option value="comment">Comentário público</option>
           </select></label>
-          <span className="muted">vale para todas as mensagens coladas abaixo</span>
+          <span className="muted">vale para as mensagens coladas abaixo — o que chega pelo canal conectado já vem marcado</span>
         </div>
         <textarea className="paste" value={bulk} onChange={(e) => setBulk(e.target.value)}
           placeholder={`Cole várias mensagens recebidas por ${brandName}, uma por bloco, separadas por uma linha com ---\nOpcional: cole a URL da aba do Meta como primeira linha do bloco — o identificador do tópico é extraído sozinho, não precisa digitar nada.\n\nEx.:\nhttps://business.facebook.com/latest/inbox/...&selected_item_id=340282366841710301244259604207492832011\ntem álcool? qual o grau?\n---\nnão encontro em Duque de Caxias, RJ`}
