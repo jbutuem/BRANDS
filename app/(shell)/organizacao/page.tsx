@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { getSession } from "@/lib/brand";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { RoleSelect } from "./RoleSelect";
 
 export const dynamic = "force-dynamic";
 
@@ -173,14 +174,7 @@ export default async function Organizacao({ searchParams }: { searchParams: Prom
               {u.rows.map((r) => (
                 <div key={r.brandId} style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 14 }}>
                   <span style={{ minWidth: 140 }}>{r.brandName}</span>
-                  <form action={updateRole} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                    <input type="hidden" name="user_id" value={u.id} /><input type="hidden" name="brand_id" value={r.brandId} />
-                    <select name="role" defaultValue={r.role} onChange={(e) => e.currentTarget.form?.requestSubmit()} style={{ ...inp, padding: 4 }}>
-                      <option value="operator">Operador</option>
-                      <option value="admin">Administrador</option>
-                      {r.role === "brand_manager" && <option value="brand_manager">Gestor da marca</option>}
-                    </select>
-                  </form>
+                  <RoleSelect action={updateRole} userId={u.id} brandId={r.brandId} defaultRole={r.role} showBrandManager={r.role === "brand_manager"} />
                   <form action={removeAccess}>
                     <input type="hidden" name="user_id" value={u.id} /><input type="hidden" name="brand_id" value={r.brandId} />
                     <button type="submit" style={{ background: "none", border: "none", color: "#b3261e", textDecoration: "underline", cursor: "pointer", fontSize: 13 }}>remover</button>
