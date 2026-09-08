@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { COMMUNITY_RULES, CIVILITY_RULES, MODERATION_RULES, EMOJI_RULES, type Flag } from "./policy";
+import { COMMUNITY_RULES, CIVILITY_RULES, MODERATION_RULES, EMOJI_RULES, NO_PLACEHOLDER_RULE, type Flag } from "./policy";
 
 const client = () => new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 export const MODEL_FAST = process.env.CLAUDE_MODEL_FAST ?? "claude-haiku-4-5-20251001";
@@ -94,6 +94,7 @@ REGRAS DURAS:
 ${COMMUNITY_RULES}
 ${CIVILITY_RULES}
 ${EMOJI_RULES}
+${NO_PLACEHOLDER_RULE}
 ${extra?.firstName ? `- A pessoa se chama ${extra.firstName}: use o primeiro nome UMA vez, de forma natural (não em toda frase).` : "- Você não sabe o nome da pessoa: não invente nem use apelidos."}
 ${extra?.history ? "- Esta é a CONTINUAÇÃO de um atendimento. Não se apresente de novo, não repita o que já foi dito e responda ao que a pessoa acabou de dizer, usando o que ela já informou antes." : ""}`,
     messages: [{ role: "user", content:
@@ -125,6 +126,7 @@ ${(cls.flags ?? []).includes("ameaca") || (cls.flags ?? []).includes("crise") ? 
 SUPERFÍCIE: ${extra?.surface === "comment" ? "comentário público — até 2 linhas e convite para o direct." : "mensagem direta."}
 ${CIVILITY_RULES}
 ${EMOJI_RULES}
+${NO_PLACEHOLDER_RULE}
 FATOS DA MARCA (pode afirmar com segurança): ${voice.facts.length ? voice.facts.join(" | ") : "nenhum"}
 LINKS OFICIAIS: ${voice.links && Object.keys(voice.links).length ? Object.entries(voice.links).map(([k, v]) => `${k}: ${v}`).join(" · ") : "(nenhum cadastrado — não cite link)"}
 Peça informação adicional SÓ quando ela for necessária para o encaminhamento: lote e validade apenas se a pessoa relatou problema com o produto (gosto estranho, embalagem, mal-estar); cidade e tipo de negócio apenas em pedido comercial. Para dúvida de composição, ingredientes ou uso, não peça nada — só confirme que vai apurar.
@@ -144,6 +146,7 @@ export async function moderationReply(voice: BrandVoice, cls: Classification, me
     model: MODEL_MAIN, max_tokens: 200,
     system: `Você responde em nome da marca ${voice.name}, em português do Brasil. Tom: ${voice.persona ? "coerente com a persona (" + voice.persona.slice(0, 160) + "), porém sério" : "próximo e sério"}.
 ${MODERATION_RULES}
+${NO_PLACEHOLDER_RULE}
 GRAU DESTA MENSAGEM: ${grave ? "GRAVE — uma frase seca, sem abertura para conversa." : "LEVE — 1 a 2 linhas, firme e cordial, sem pergunta, sem convite para continuar, sem citar produto."}
 SUPERFÍCIE: ${surface === "comment" ? "comentário público." : "mensagem direta."}
 Escreva só a resposta, sem emoji, sem assinatura.`,
@@ -152,7 +155,7 @@ Escreva só a resposta, sem emoji, sem assinatura.`,
   return r.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("").trim();
 }
 
-/** 4. Guardião — tom de voz + segurança + civilidade + proporcionalidade. */
+/** 4. Guardião — tom de voz + segurança. */
 export function guard(voice: BrandVoice, cls: Classification, message: string, draft: string, context: string, history = "", surface: "dm" | "comment" = "dm") {
   return json<Verdict>(MODEL_MAIN,
 `Você é o revisor final das respostas da marca ${voice.name} nas redes sociais. Responda SOMENTE com JSON válido, em UMA linha, sem quebras de linha dentro dos textos:
@@ -160,6 +163,7 @@ export function guard(voice: BrandVoice, cls: Classification, message: string, d
 
 ORDEM DE DECISÃO: aprovada → reescrita → redirecionar → escalar → bloqueada. Use o degrau mais baixo que resolva.
 REDIRECIONAR (em vez de escalar) quando a informação pedida não está no contexto MAS é pública e a pessoa pode obter sozinha: composição/ingredientes/alérgenos (rótulo, ficha do produto no site), tabela nutricional, modo de uso básico, horário/canal do SAC. Escalar só quando precisa de apuração interna (reclamação, problema com produto, risco, comercial, jurídico, crise).
+BLOQUEIE ou peça REESCRITA se a resposta contém qualquer placeholder entre colchetes/chaves ("[nome]", "{nome}", "[cidade]" etc.) — isso nunca pode ir ao ar.
 BLOQUEIE ou peça REESCRITA se a resposta usa emoji de careta/língua de fora (😝😜🤪), risada exagerada (😂🤣), deboche/ironia (😏), diabinho (😈) ou mais de 1 emoji — troque por no máximo 1 emoji simples (😊🙂😉👍) ou nenhum.
 BLOQUEIE (civilidade — sem exceção) se a resposta: engaja, brinca, agradece ou oferece produto em reação a uma mensagem ofensiva, machista, sexualizada ou preconceituosa (a única resposta aceitável é um limite curto e firme); contém preconceito ou generalização sobre raça, cor, etnia, gênero, orientação sexual, identidade de gênero, religião, deficiência, idade, origem regional, classe, corpo/peso ou sotaque, mesmo em tom de piada; debocha do cliente; usa palavrão, sarcasmo com pessoa irritada, conteúdo sexual ou ameaça; espelha agressividade; opina sobre política, religião, futebol ou concorrente; confirma/nega recall, processo ou boato; promete compensação/reembolso/brinde.
 BLOQUEIE ou ESCALE se a resposta: garante que o produto "não faz mal"/"é seguro"/"pode consumir" (qualquer garantia de saúde, mesmo em tom leve); usa nome de produto que não existe no contexto (ex.: repete um nome digitado errado pelo cliente); dá orientação médica/nutricional individual; afirma sobre alergia/alérgeno algo que não está no contexto; fala de álcool para menor de idade; promete preço, prazo ou estoque; expõe dado pessoal; contém código/EAN/validade que não está no contexto; responde a uma reclamação séria ou pedido de indenização (→ escalar sac); pergunta técnica que o contexto não cobre (→ escalar tecnico); pedido comercial de grande volume, tabela de preço ou cadastro de distribuidor (→ escalar comercial).
