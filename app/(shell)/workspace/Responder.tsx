@@ -7,7 +7,7 @@ import { LeadCard } from "./LeadCard";
 type Contact = { id: string; kind: string; name: string; email: string | null; whatsapp: string | null; phone: string | null; scope: string | null };
 type Result = {
   conversationId: string; messageId: string; responseId: string; version: number; text: string;
-  verdict: "aprovada" | "reescrita" | "redirecionar" | "escalar" | "bloqueada" | "moderacao"; reason: string; escalateTo: string | null; contacts: Contact[];
+  verdict: "aprovada" | "reescrita" | "redirecionar" | "escalar" | "bloqueada" | "moderacao" | "reacao"; reason: string; escalateTo: string | null; contacts: Contact[];
   classification: { intent: string; uf: string | null; city: string | null; sentiment: string; summary: string; flags: string[]; surface: string; audience: string; businessType: string | null; businessName: string | null; leadSignals: string[]; products: string[] };
   commercial?: Contact[];
   sources: { products: string[]; distributors: string[]; documents: string[] };
@@ -67,7 +67,7 @@ export function Responder({ brandName }: { brandName: string }) {
   async function saveLabel() { if (conv) { await setLabel(conv.id, label); refreshOpen(); } }
 
   const scrubbed = res ? Object.values(res.scrub).reduce((a, b) => a + b, 0) : 0;
-  const badge = res ? ({ aprovada: ["#1b7f4b", "aprovada pelo guardião"], reescrita: ["#8a6d00", "reescrita e aprovada"], redirecionar: ["#0a4d8c", "direcionada para canal oficial"], moderacao: ["#5b3a8c", "resposta de limite — moderação"], escalar: ["#b3261e", "encaminhar — resposta de acolhimento"], bloqueada: ["#b3261e", "bloqueada — resposta de acolhimento"] } as Record<string, string[]>)[res.verdict] : null;
+  const badge = res ? ({ aprovada: ["#1b7f4b", "aprovada pelo guardião"], reescrita: ["#8a6d00", "reescrita e aprovada"], redirecionar: ["#0a4d8c", "direcionada para canal oficial"], moderacao: ["#5b3a8c", "resposta de limite — moderação"], escalar: ["#b3261e", "encaminhar — resposta de acolhimento"], bloqueada: ["#b3261e", "bloqueada — resposta de acolhimento"], reacao: ["#0a7a6c", "sugestão: só reagir"] } as Record<string, string[]>)[res.verdict] : null;
   const FLAG: Record<string, string> = { ofensa: "ofensa", discurso_odio: "discurso de ódio", sexismo: "machismo / sexualização", ameaca: "ameaça", crise: "sinal de crise", juridico: "jurídico", saude: "saúde", menor: "possível menor" };
 
   return (
@@ -139,9 +139,10 @@ export function Responder({ brandName }: { brandName: string }) {
             </div>}
             {res.verdict === "redirecionar" && <p className="muted" style={{ marginBottom: 10 }}>A informação não está na base, mas existe em canal oficial ({res.reason}). A resposta direciona para lá. Se subir esse material na Aprendizado, a próxima sai direta.</p>}
             {(res.verdict === "escalar" || res.verdict === "bloqueada") && <p className="error" style={{ marginBottom: 10 }}>O guardião não aprovou uma resposta direta ({res.reason}). Abaixo vai só o acolhimento e o encaminhamento — o assunto em si fica com {res.escalateTo ?? "a equipe responsável"}.</p>}
-            <div style={{ whiteSpace: "pre-wrap", fontSize: 16, lineHeight: 1.55, padding: "4px 0 14px" }}>{res.text}</div>
+            {res.verdict === "reacao" && <p className="muted" style={{ marginBottom: 10 }}>Elogio sem nada específico para responder — reagir já é suficiente. Clique no emoji do comentário/mensagem no Meta em vez de escrever.</p>}
+            <div style={{ whiteSpace: "pre-wrap", fontSize: res.verdict === "reacao" ? 40 : 16, lineHeight: 1.55, padding: "4px 0 14px" }}>{res.text}</div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-              <button className="btn" onClick={copy}>{fb === "copiada" ? "Copiado ✓ (registrado no atendimento)" : "Copiar e registrar"}</button>
+              <button className="btn" onClick={copy}>{fb === "copiada" ? "Copiado ✓ (registrado no atendimento)" : res.verdict === "reacao" ? "Registrar reação" : "Copiar e registrar"}</button>
               <button onClick={() => { feedback(res.responseId, "gostei"); setFb("gostei"); }} disabled={!!fb && fb !== "copiada"} style={btn(fb === "gostei")}>👍</button>
               <button onClick={() => { feedback(res.responseId, "nao_gostei"); setFb("nao_gostei"); }} disabled={!!fb && fb !== "copiada"} style={btn(fb === "nao_gostei")}>👎</button>
             </div>
