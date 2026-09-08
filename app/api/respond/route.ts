@@ -14,6 +14,8 @@ export const runtime = "nodejs";
  * Pipeline: Scrubber → Classificador → Retriever → Redator → Guardião (máx. 2 ciclos).
  * externalThreadId (id do tópico no Meta): reaproveita o atendimento e evita gerar de novo se a
  * varredura recorrente encontrar a mesma mensagem sem resposta ainda.
+ * Elogio puro pode virar sugestão de reação (emoji) em vez de resposta escrita.
+ * Pessoa conhecida da marca (contactName casando com brand_vips) recebe tratamento institucional.
  * brand_id vem SEMPRE da sessão. Texto bruto e nome nunca são gravados.
  */
 export async function POST(req: Request) {
@@ -42,6 +44,23 @@ export async function POST(req: Request) {
   const severe = (cls.flags ?? []).some((f) => f === "ameaca" || f === "crise" || f === "juridico" || f === "menor");
   // Moderação só para ódio/sexismo, ou ofensa SEM reclamação real (troll). Cliente irritado reclamando segue o fluxo normal (acolher + SAC).
   const offensive = (cls.flags ?? []).some((f) => f === "discurso_odio" || f === "sexismo") || ((cls.flags ?? []).includes("ofensa") && cls.intent !== "reclamacao");
+  // Reação em vez de resposta: elogio puro, sem pergunta, sem produto, sem reclamação — decisão do classificador + trava em código.
+  const REACTION_EMOJIS = ["❤️", "👍", "🔥", "🙌", "😊"];
+  const canReact = !!cls.reacao_apenas && cls.intent === "engajamento" && cls.sentiment !== "negativo" && !(cls.flags ?? []).length && cls.substance === "vaga" && !severe && !offensive;
+  const reactionEmoji = canReact ? (REACTION_EMOJIS.includes(cls.emoji_sugerido ?? "") ? cls.emoji_sugerido! : "❤️") : null;
+
+  // Pessoa conhecida da marca (diretor, marketing, imprensa...): só quando o operador identifica explicitamente pelo nome
+  let vipContext: string | null = null;
+  if (contactName) {
+    const { data: vips } = await sb.from("brand_vips").select("name, aliases, role, org, notes").eq("brand_id", brandId).eq("is_active", true);
+    const wanted = contactName.trim().toLowerCase();
+    const firstWanted = firstName?.toLowerCase() ?? "";
+    const vip = (vips ?? []).find((v) => {
+      const n = v.name.toLowerCase();
+      return n === wanted || n.split(/\s+/)[0] === firstWanted || (v.aliases ?? []).some((a: string) => a.toLowerCase() === wanted);
+    });
+    if (vip) vipContext = `${vip.name}${vip.role ? " — " + vip.role : ""}${vip.org ? ` (${vip.org})` : ""}${vip.notes ? `. ${vip.notes}` : ""}`;
+  }
 
   // externalThreadId (id do tópico no Meta): reaproveita o atendimento em vez de duplicar em varreduras repetidas
   let conversationIdIn: string | undefined = body.conversationId;
@@ -138,12 +157,15 @@ export async function POST(req: Request) {
   // 3+4. Redator ↔ Guardião (máx. 2 reescritas)
   let draft = "", verdict: Awaited<ReturnType<typeof guard>> = { verdict: "aprovada", reason: "" }, cycles = 0, hint: string | undefined;
   try {
-    // Mensagem ofensiva/preconceituosa: não passa pelo Redator. Sai resposta de limite (uma linha) e recomendação de moderação.
-    if (offensive && !severe) {
+    // Elogio puro sem nada a responder: sugere reação (emoji) em vez de texto. Não passa pelo Redator nem pelo Guardião.
+    if (canReact && reactionEmoji) {
+      draft = reactionEmoji;
+      verdict = { verdict: "reacao", reason: "elogio/entusiasmo sem pergunta, produto ou reclamação — reação basta", escalate_to: null };
+    } else if (offensive && !severe) {
       draft = await moderationReply(voice, cls, clean, surface);
       verdict = { verdict: "moderacao", reason: `mensagem com ${(cls.flags ?? []).join(", ")}`, escalate_to: null };
     } else for (;;) {
-      draft = await write(voice, cls, clean, ctx, examples, hint, { firstName, history: historyText, surface, commercial: commercialText });
+      draft = await write(voice, cls, clean, ctx, examples, hint, { firstName, history: historyText, surface, commercial: commercialText, vip: vipContext });
       try { verdict = await guard(voice, cls, clean, draft, ctx, historyText, surface); if (String(verdict.escalate_to) === "null" || !verdict.escalate_to) verdict.escalate_to = null; }
       catch { verdict = cycles < 2 ? { verdict: "reescrita", reason: "revisor ilegível", rewrite_hint: "responda mais curto e simples" } : { verdict: "escalar", reason: "revisor indisponível", escalate_to: "sac" }; }
       // Rede de segurança em código: nunca deixa passar um placeholder tipo "[nome]" mesmo que o revisor não pegue.
@@ -157,7 +179,7 @@ export async function POST(req: Request) {
     }
     // Reprovado pelo Guardião: o rascunho é descartado e o operador recebe uma resposta segura de acolhimento/encaminhamento.
     if (verdict.verdict === "escalar" || verdict.verdict === "bloqueada" || verdict.verdict === "redirecionar") {
-      draft = await safeReply(voice, cls, clean, verdict.reason, (verdict.escalate_to && String(verdict.escalate_to) !== "null") ? verdict.escalate_to : null, P_.length ? P_.map((p) => `- ${p.name} (${p.line ?? ""}, ${p.packaging ?? ""})`).join("\n") : "", { firstName, history: historyText, surface, mode: verdict.verdict });
+      draft = await safeReply(voice, cls, clean, verdict.reason, (verdict.escalate_to && String(verdict.escalate_to) !== "null") ? verdict.escalate_to : null, P_.length ? P_.map((p) => `- ${p.name} (${p.line ?? ""}, ${p.packaging ?? ""})`).join("\n") : "", { firstName, history: historyText, surface, mode: verdict.verdict, vip: vipContext });
     }
   } catch (e) {
     return NextResponse.json({ error: `IA indisponível: ${e instanceof Error ? e.message : e}` }, { status: 502 });
