@@ -5,7 +5,7 @@ import { pendingQueue, type PendingItem } from "./actions";
 type Contact = { id: string; kind: string; name: string; email: string | null; whatsapp: string | null };
 type ApiResult = {
   conversationId: string; messageId: string; responseId: string; version: number; text: string;
-  verdict: "aprovada" | "reescrita" | "redirecionar" | "escalar" | "bloqueada" | "moderacao"; reason: string; escalateTo: string | null; contacts: Contact[];
+  verdict: "aprovada" | "reescrita" | "redirecionar" | "escalar" | "bloqueada" | "moderacao" | "reacao"; reason: string; escalateTo: string | null; contacts: Contact[];
   classification: { intent: string; uf: string | null; sentiment: string; summary: string; flags: string[]; surface: string; audience: string; businessType: string | null };
   sources: { products: string[]; distributors: string[]; documents: string[] };
   scrub: Record<string, number>; cleanText: string; latencyMs: number;
@@ -18,7 +18,7 @@ type Item = {
 const INTENT: Record<string, string> = { produto: "produto", onde_comprar: "onde comprar", tecnica: "técnica", engajamento: "engajamento", reclamacao: "reclamação", risco: "risco", outro: "outro" };
 const BADGE: Record<string, [string, string]> = {
   aprovada: ["#1b7f4b", "aprovada"], reescrita: ["#8a6d00", "reescrita"], redirecionar: ["#0a4d8c", "direcionada"],
-  moderacao: ["#5b3a8c", "moderação"], escalar: ["#b3261e", "encaminhar"], bloqueada: ["#b3261e", "bloqueada"],
+  moderacao: ["#5b3a8c", "moderação"], escalar: ["#b3261e", "encaminhar"], bloqueada: ["#b3261e", "bloqueada"], reacao: ["#0a7a6c", "só reagir"],
 };
 const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -158,12 +158,13 @@ function Card({ it, onApprove, onReject, onRegenerate, onDismiss, compact }: {
             <span className="muted" style={{ fontSize: 13 }}>· {INTENT[it.res.classification.intent] ?? it.res.classification.intent}{it.res.classification.uf ? ` · ${it.res.classification.uf}` : ""}{it.res.classification.audience === "b2b" ? ` · B2B${it.res.classification.businessType ? " " + it.res.classification.businessType : ""}` : ""}</span>
           </div>
           {it.res.classification.flags?.length > 0 && <p className="muted" style={{ marginBottom: 8, color: "#7a4a00" }}>⚠ {it.res.classification.flags.join(", ")}</p>}
-          <div style={{ whiteSpace: "pre-wrap", fontSize: 15, lineHeight: 1.5, marginBottom: 10 }}>{it.res.text}</div>
-          {it.status === "aprovada" && <p style={{ color: "#1b7f4b", fontSize: 13, marginBottom: 8 }}>✓ Liberada — vou publicar</p>}
+          {it.res.verdict === "reacao" && <p className="muted" style={{ marginBottom: 6 }}>Elogio sem nada específico — clique no emoji do comentário no Meta em vez de escrever.</p>}
+          <div style={{ whiteSpace: "pre-wrap", fontSize: it.res.verdict === "reacao" ? 32 : 15, lineHeight: 1.5, marginBottom: 10 }}>{it.res.text}</div>
+          {it.status === "aprovada" && <p style={{ color: "#1b7f4b", fontSize: 13, marginBottom: 8 }}>✓ {it.res.verdict === "reacao" ? "Registrada" : "Liberada — vou publicar"}</p>}
           {it.status === "reprovada" && <p className="muted" style={{ fontSize: 13, marginBottom: 8 }}>Reprovada, atendimento encerrado</p>}
           {(it.status === "pronta") && (
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <button className="btn" onClick={() => onApprove(it)}>Liberar publicação</button>
+              <button className="btn" onClick={() => onApprove(it)}>{it.res.verdict === "reacao" ? "Registrar reação" : "Liberar publicação"}</button>
               <button onClick={() => onRegenerate(it)} style={btn()}>Regenerar</button>
               <button onClick={() => onReject(it)} style={btn()}>Reprovar</button>
             </div>
