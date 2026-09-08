@@ -1,20 +1,16 @@
 import { NextResponse } from "next/server";
-import crypto from "node:crypto";
 import { getSession } from "@/lib/brand";
-import { authorizeUrl, appSecret } from "@/lib/meta";
+import { authorizeUrl, signState } from "@/lib/meta";
 
 export const runtime = "nodejs";
 
-/** state assinado: leva a marca ativa e expira em 10 min. Evita CSRF no callback. */
-export function signState(brandId: string, userId: string) {
-  const payload = `${brandId}.${userId}.${Date.now()}`;
-  const sig = crypto.createHmac("sha256", appSecret()).update(payload).digest("hex").slice(0, 32);
-  return Buffer.from(`${payload}.${sig}`).toString("base64url");
-}
-
+/** Manda o gestor para o diálogo do Facebook Login for Business, com state assinado. */
 export async function GET() {
-  const { user, active } = await getSession();
+  const { user, active, role } = await getSession();
   if (!user || !active) return NextResponse.json({ error: "sem marca ativa" }, { status: 403 });
+  if (role !== "admin" && role !== "brand_manager") {
+    return NextResponse.json({ error: "só admin ou gestor da marca pode conectar canais" }, { status: 403 });
+  }
   try {
     return NextResponse.redirect(authorizeUrl(signState(active.id, user.id)));
   } catch (e) {
