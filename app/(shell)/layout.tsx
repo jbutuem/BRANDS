@@ -20,7 +20,7 @@ async function signOut() {
 }
 
 export default async function ShellLayout({ children }: { children: React.ReactNode }) {
-  const { user, brands, active, role } = await getSession();
+  const { user, brands, active, role, isAdminAnywhere } = await getSession();
   const color = active ? BRAND_COLOR[active.slug] ?? { bg: "#1b1f24", ink: "#fff" } : { bg: "#1b1f24", ink: "#fff" };
 
   return (
@@ -36,7 +36,7 @@ export default async function ShellLayout({ children }: { children: React.ReactN
           <p className="brand-name">Sem marca</p>
         )}
         {brands.length > 1 && <BrandSwitch brands={brands} activeSlug={active?.slug ?? null} />}
-        <NavLinks canConfigure={role === "admin" || role === "brand_manager"} />
+        <NavLinks canConfigure={role === "admin" || role === "brand_manager"} canManageOrg={isAdminAnywhere} />
         <footer>
           {user.email}
           <br />
