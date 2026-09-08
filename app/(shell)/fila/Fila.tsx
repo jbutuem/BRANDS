@@ -1,0 +1,148 @@
+"use client";
+import { useState } from "react";
+
+type Contact = { id: string; kind: string; name: string; email: string | null; whatsapp: string | null };
+type ApiResult = {
+  conversationId: string; messageId: string; responseId: string; version: number; text: string;
+  verdict: "aprovada" | "reescrita" | "redirecionar" | "escalar" | "bloqueada" | "moderacao"; reason: string; escalateTo: string | null; contacts: Contact[];
+  classification: { intent: string; uf: string | null; sentiment: string; summary: string; flags: string[]; surface: string; audience: string; businessType: string | null };
+  sources: { products: string[]; distributors: string[]; documents: string[] };
+  scrub: Record<string, number>; cleanText: string; latencyMs: number;
+};
+type Item = {
+  id: string; raw: string; status: "carregando" | "pronta" | "erro" | "aprovada" | "reprovada";
+  res?: ApiResult; error?: string;
+};
+
+const INTENT: Record<string, string> = { produto: "produto", onde_comprar: "onde comprar", tecnica: "técnica", engajamento: "engajamento", reclamacao: "reclamação", risco: "risco", outro: "outro" };
+const BADGE: Record<string, [string, string]> = {
+  aprovada: ["#1b7f4b", "aprovada"], reescrita: ["#8a6d00", "reescrita"], redirecionar: ["#0a4d8c", "direcionada"],
+  moderacao: ["#5b3a8c", "moderação"], escalar: ["#b3261e", "encaminhar"], bloqueada: ["#b3261e", "bloqueada"],
+};
+const uid = () => Math.random().toString(36).slice(2, 10);
+
+export function Fila({ brandName }: { brandName: string }) {
+  const [bulk, setBulk] = useState("");
+  const [channel, setChannel] = useState("instagram");
+  const [surface, setSurface] = useState<"dm" | "comment">("dm");
+  const [items, setItems] = useState<Item[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  async function process() {
+    const parts = bulk.split(/^\s*-{3,}\s*$/m).map((s) => s.trim()).filter(Boolean);
+    if (!parts.length) return;
+    const fresh: Item[] = parts.map((raw) => ({ id: uid(), raw, status: "carregando" }));
+    setItems((prev) => [...fresh, ...prev]);
+    setBulk(""); setBusy(true);
+    await Promise.allSettled(fresh.map((it) => runOne(it.id, it.raw)));
+    setBusy(false);
+  }
+
+  async function runOne(id: string, text: string, conversationId?: string, messageId?: string) {
+    try {
+      const r = await fetch("/api/respond", { method: "POST", body: JSON.stringify({ text, channel, surface, conversationId, messageId }) });
+      const j = await r.json();
+      if (!r.ok) { setItems((prev) => prev.map((it) => (it.id === id ? { ...it, status: "erro", error: j.error ?? "falha" } : it))); return; }
+      setItems((prev) => prev.map((it) => (it.id === id ? { ...it, status: "pronta", res: j, error: undefined } : it)));
+    } catch {
+      setItems((prev) => prev.map((it) => (it.id === id ? { ...it, status: "erro", error: "falha de rede" } : it)));
+    }
+  }
+
+  async function regenerate(it: Item) {
+    if (!it.res) return;
+    setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, status: "carregando" } : x)));
+    await fetch("/api/feedback", { method: "POST", body: JSON.stringify({ responseId: it.res.responseId, kind: "regerada" }) });
+    await runOne(it.id, it.raw, it.res.conversationId, it.res.messageId);
+  }
+
+  async function approve(it: Item) {
+    if (!it.res) return;
+    await navigator.clipboard.writeText(it.res.text);
+    await fetch("/api/feedback", { method: "POST", body: JSON.stringify({ responseId: it.res.responseId, kind: "copiada" }) });
+    setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, status: "aprovada" } : x)));
+  }
+  async function reject(it: Item) {
+    if (!it.res) return;
+    await fetch("/api/feedback", { method: "POST", body: JSON.stringify({ responseId: it.res.responseId, kind: "nao_gostei" }) });
+    setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, status: "reprovada" } : x)));
+  }
+  function dismiss(id: string) { setItems((prev) => prev.filter((x) => x.id !== id)); }
+
+  const pending = items.filter((i) => i.status === "carregando" || i.status === "pronta" || i.status === "erro");
+  const done = items.filter((i) => i.status === "aprovada" || i.status === "reprovada");
+
+  return (
+    <div>
+      <div className="panel">
+        <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
+          <label className="muted">Canal <select value={channel} onChange={(e) => setChannel(e.target.value)} style={{ marginLeft: 6, padding: 6, borderRadius: 6, border: "1px solid var(--line)" }}>
+            <option value="instagram">Instagram</option><option value="facebook">Facebook</option><option value="whatsapp">WhatsApp</option><option value="outro">Outro</option>
+          </select></label>
+          <label className="muted">Onde <select value={surface} onChange={(e) => setSurface(e.target.value as "dm" | "comment")} style={{ marginLeft: 6, padding: 6, borderRadius: 6, border: "1px solid var(--line)" }}>
+            <option value="dm">Mensagem direta</option><option value="comment">Comentário público</option>
+          </select></label>
+          <span className="muted">vale para todas as mensagens coladas abaixo</span>
+        </div>
+        <textarea className="paste" value={bulk} onChange={(e) => setBulk(e.target.value)}
+          placeholder={`Cole várias mensagens recebidas por ${brandName}, uma por bloco, separadas por uma linha com ---\n\nEx.:\ntem álcool? qual o grau?\n---\nnão encontro em Duque de Caxias, RJ\n---\nquero saber sobre revenda, tenho uma cafeteria em Curitiba`}
+          style={{ minHeight: 160 }} disabled={busy} />
+        <div style={{ marginTop: 12 }}>
+          <button className="btn" onClick={process} disabled={busy || !bulk.trim()}>{busy ? "Gerando…" : "Gerar respostas"}</button>
+        </div>
+      </div>
+
+      {pending.length > 0 && (
+        <div style={{ display: "grid", gap: 12, marginBottom: 16 }}>
+          {pending.map((it) => <Card key={it.id} it={it} onApprove={approve} onReject={reject} onRegenerate={regenerate} onDismiss={dismiss} />)}
+        </div>
+      )}
+      {!pending.length && !done.length && <p className="muted">Nenhuma mensagem na fila. Cole acima e clique em Gerar respostas.</p>}
+
+      {done.length > 0 && (
+        <details style={{ marginTop: 8 }}>
+          <summary className="muted">Concluídas nesta sessão ({done.length})</summary>
+          <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+            {done.map((it) => <Card key={it.id} it={it} onApprove={approve} onReject={reject} onRegenerate={regenerate} onDismiss={dismiss} compact />)}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function Card({ it, onApprove, onReject, onRegenerate, onDismiss, compact }: {
+  it: Item; onApprove: (i: Item) => void; onReject: (i: Item) => void; onRegenerate: (i: Item) => void; onDismiss: (id: string) => void; compact?: boolean;
+}) {
+  const badge = it.res ? BADGE[it.res.verdict] : null;
+  return (
+    <div className="panel" style={{ margin: 0, opacity: compact ? 0.7 : 1, borderLeft: badge ? `4px solid ${badge[0]}` : undefined }}>
+      <div className="muted" style={{ fontSize: 13, marginBottom: 8, whiteSpace: "pre-wrap" }}>“{it.raw}”</div>
+
+      {it.status === "carregando" && <p className="muted">Gerando…</p>}
+      {it.status === "erro" && <p className="error">{it.error}</p>}
+
+      {it.res && (
+        <>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+            <span style={{ color: badge![0], fontWeight: 600, fontSize: 13 }}>{badge![1]}</span>
+            <span className="muted" style={{ fontSize: 13 }}>· {INTENT[it.res.classification.intent] ?? it.res.classification.intent}{it.res.classification.uf ? ` · ${it.res.classification.uf}` : ""}{it.res.classification.audience === "b2b" ? ` · B2B${it.res.classification.businessType ? " " + it.res.classification.businessType : ""}` : ""}</span>
+          </div>
+          {it.res.classification.flags?.length > 0 && <p className="muted" style={{ marginBottom: 8, color: "#7a4a00" }}>⚠ {it.res.classification.flags.join(", ")}</p>}
+          <div style={{ whiteSpace: "pre-wrap", fontSize: 15, lineHeight: 1.5, marginBottom: 10 }}>{it.res.text}</div>
+          {it.status === "aprovada" && <p style={{ color: "#1b7f4b", fontSize: 13, marginBottom: 8 }}>✓ Copiada — cole no Meta</p>}
+          {it.status === "reprovada" && <p className="muted" style={{ fontSize: 13, marginBottom: 8 }}>Reprovada, não copiada</p>}
+          {(it.status === "pronta") && (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button className="btn" onClick={() => onApprove(it)}>Aprovar e copiar</button>
+              <button onClick={() => onRegenerate(it)} style={btn()}>Regenerar</button>
+              <button onClick={() => onReject(it)} style={btn()}>Reprovar</button>
+            </div>
+          )}
+          {compact && <button onClick={() => onDismiss(it.id)} className="muted" style={{ background: "none", border: "none", textDecoration: "underline", cursor: "pointer", fontSize: 13, marginTop: 6 }}>remover da lista</button>}
+        </>
+      )}
+    </div>
+  );
+}
+function btn(): React.CSSProperties { return { background: "transparent", color: "var(--ink)", border: "1px solid var(--line)", borderRadius: 6, padding: "10px 14px", cursor: "pointer" }; }
