@@ -3,6 +3,7 @@ import { getSession } from "@/lib/brand";
 
 export type PendingItem = {
   conversationId: string; messageId: string; content: string; channel: string; surface: string; externalUrl: string | null;
+  connected: boolean;
   responseId: string | null; version: number | null; text: string | null; verdict: string | null; reason: string | null;
   classification: Record<string, unknown> | null; createdAt: string;
 };
@@ -14,10 +15,12 @@ export async function pendingQueue(): Promise<PendingItem[]> {
   if (error || !data) return [];
   return (data as Array<{
     conversation_id: string; message_id: string; content: string; channel: string; surface: string; external_url: string | null;
+    connected: boolean;
     response_id: string | null; version: number | null; response_text: string | null; verdict: string | null;
     verdict_reason: string | null; classifier_out: Record<string, unknown> | null; created_at: string;
   }>).map((r) => ({
     conversationId: r.conversation_id, messageId: r.message_id, content: r.content, channel: r.channel, surface: r.surface, externalUrl: r.external_url,
+    connected: !!r.connected,
     responseId: r.response_id, version: r.version, text: r.response_text, verdict: r.verdict, reason: r.verdict_reason,
     classification: r.classifier_out, createdAt: r.created_at,
   }));
@@ -32,11 +35,12 @@ export async function awaitingPublication(): Promise<AwaitingItem[]> {
   if (error || !data) return [];
   return (data as Array<{
     conversation_id: string; message_id: string; content: string; channel: string; surface: string; external_thread_id: string | null; external_url: string | null;
+    connected: boolean;
     response_id: string | null; version: number | null; response_text: string | null; verdict: string | null;
     verdict_reason: string | null; classifier_out: Record<string, unknown> | null; updated_at: string;
   }>).map((r) => ({
     conversationId: r.conversation_id, messageId: r.message_id, content: r.content, channel: r.channel, surface: r.surface, externalUrl: r.external_url,
-    externalThreadId: r.external_thread_id,
+    externalThreadId: r.external_thread_id, connected: !!r.connected,
     responseId: r.response_id, version: r.version, text: r.response_text, verdict: r.verdict, reason: r.verdict_reason,
     classification: r.classifier_out, createdAt: r.updated_at,
   }));
