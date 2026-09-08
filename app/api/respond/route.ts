@@ -146,6 +146,10 @@ export async function POST(req: Request) {
       draft = await write(voice, cls, clean, ctx, examples, hint, { firstName, history: historyText, surface, commercial: commercialText });
       try { verdict = await guard(voice, cls, clean, draft, ctx, historyText, surface); if (String(verdict.escalate_to) === "null" || !verdict.escalate_to) verdict.escalate_to = null; }
       catch { verdict = cycles < 2 ? { verdict: "reescrita", reason: "revisor ilegível", rewrite_hint: "responda mais curto e simples" } : { verdict: "escalar", reason: "revisor indisponível", escalate_to: "sac" }; }
+      // Rede de segurança em código: nunca deixa passar um placeholder tipo "[nome]" mesmo que o revisor não pegue.
+      if (/\[[a-zà-úA-ZÀ-Ú ]{2,20}\]|\{[a-zà-úA-ZÀ-Ú ]{2,20}\}/.test(draft)) {
+        verdict = cycles < 2 ? { verdict: "reescrita", reason: "placeholder entre colchetes no texto", rewrite_hint: "reescreva sem nenhum placeholder como [nome] ou {nome}; se não sabe o nome, não use nome nenhum" } : { verdict: "escalar", reason: "placeholder não removido", escalate_to: "sac" };
+      }
       // Sinal de crise/ameaça/jurídico/menor: nunca sai resposta direta — vai para o SAC com acolhimento neutro.
       if (severe && verdict.verdict !== "bloqueada") { verdict = { verdict: "escalar", reason: `sinal sensível: ${(cls.flags ?? []).join(", ")}`, escalate_to: "sac" }; break; }
       if (verdict.verdict !== "reescrita" || cycles >= 2) break;
