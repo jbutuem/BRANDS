@@ -59,6 +59,10 @@ EMOJIS
 - Na dúvida se um emoji pode soar de deboche, não use nenhum.
 `;
 
+export const NO_PLACEHOLDER_RULE = `
+PROIBIDO usar qualquer placeholder entre colchetes ou chaves no texto final, como "[nome]", "{nome}", "[Seu Nome]", "[cidade]", "[produto]" etc. Se não souber o nome da pessoa, escreva a frase sem nenhum nome — nunca deixe uma lacuna visível. O texto que você escreve é o que vai ser publicado exatamente como está.
+`;
+
 export function detectCrisis(text: string): boolean {
   const t = text.toLowerCase();
   return CRISIS_SIGNALS.some((s) => t.includes(s));
