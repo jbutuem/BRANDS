@@ -1,5 +1,6 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { pendingQueue, type PendingItem } from "./actions";
 
 type Contact = { id: string; kind: string; name: string; email: string | null; whatsapp: string | null };
 type ApiResult = {
@@ -11,7 +12,7 @@ type ApiResult = {
 };
 type Item = {
   id: string; raw: string; status: "carregando" | "pronta" | "erro" | "aprovada" | "reprovada";
-  res?: ApiResult; error?: string;
+  res?: ApiResult; error?: string; externalThreadId?: string;
 };
 
 const INTENT: Record<string, string> = { produto: "produto", onde_comprar: "onde comprar", tecnica: "técnica", engajamento: "engajamento", reclamacao: "reclamação", risco: "risco", outro: "outro" };
@@ -21,26 +22,53 @@ const BADGE: Record<string, [string, string]> = {
 };
 const uid = () => Math.random().toString(36).slice(2, 10);
 
+function fromPending(p: PendingItem): Item {
+  const c = (p.classification ?? {}) as Record<string, unknown>;
+  return {
+    id: p.messageId, raw: p.content, status: "pronta",
+    res: p.responseId ? {
+      conversationId: p.conversationId, messageId: p.messageId, responseId: p.responseId, version: p.version ?? 1,
+      text: p.text ?? "", verdict: (p.verdict as ApiResult["verdict"]) ?? "aprovada", reason: p.reason ?? "", escalateTo: null, contacts: [],
+      classification: {
+        intent: (c.intent as string) ?? "outro", uf: (c.uf as string) ?? null, sentiment: (c.sentiment as string) ?? "neutro",
+        summary: (c.summary as string) ?? "", flags: (c.flags as string[]) ?? [], surface: p.surface,
+        audience: (c.audience as string) ?? "indefinido", businessType: (c.business_type as string) ?? null,
+      },
+      sources: { products: [], distributors: [], documents: [] }, scrub: {}, cleanText: p.content, latencyMs: 0,
+    } : undefined,
+  };
+}
+
 export function Fila({ brandName }: { brandName: string }) {
   const [bulk, setBulk] = useState("");
   const [channel, setChannel] = useState("instagram");
   const [surface, setSurface] = useState<"dm" | "comment">("dm");
   const [items, setItems] = useState<Item[]>([]);
   const [busy, setBusy] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    pendingQueue().then((rows) => { setItems(rows.map(fromPending)); setLoaded(true); });
+  }, []);
 
   async function process() {
-    const parts = bulk.split(/^\s*-{3,}\s*$/m).map((s) => s.trim()).filter(Boolean);
-    if (!parts.length) return;
-    const fresh: Item[] = parts.map((raw) => ({ id: uid(), raw, status: "carregando" }));
+    // cada bloco pode começar com uma linha "id: <identificador do tópico no Meta>" — evita duplicar em varreduras futuras
+    const blocks = bulk.split(/^\s*-{3,}\s*$/m).map((s) => s.trim()).filter(Boolean);
+    const parsed = blocks.map((b) => {
+      const m = b.match(/^id:\s*(\S+)\s*\n([\s\S]*)$/i);
+      return m ? { raw: m[2].trim(), externalThreadId: m[1] } : { raw: b, externalThreadId: undefined };
+    }).filter((p) => p.raw);
+    if (!parsed.length) return;
+    const fresh: Item[] = parsed.map((p) => ({ id: uid(), raw: p.raw, externalThreadId: p.externalThreadId, status: "carregando" }));
     setItems((prev) => [...fresh, ...prev]);
     setBulk(""); setBusy(true);
-    await Promise.allSettled(fresh.map((it) => runOne(it.id, it.raw)));
+    await Promise.allSettled(fresh.map((it) => runOne(it.id, it.raw, it.externalThreadId)));
     setBusy(false);
   }
 
-  async function runOne(id: string, text: string, conversationId?: string, messageId?: string) {
+  async function runOne(id: string, text: string, externalThreadId?: string, conversationId?: string, messageId?: string) {
     try {
-      const r = await fetch("/api/respond", { method: "POST", body: JSON.stringify({ text, channel, surface, conversationId, messageId }) });
+      const r = await fetch("/api/respond", { method: "POST", body: JSON.stringify({ text, channel, surface, conversationId, messageId, externalThreadId }) });
       const j = await r.json();
       if (!r.ok) { setItems((prev) => prev.map((it) => (it.id === id ? { ...it, status: "erro", error: j.error ?? "falha" } : it))); return; }
       setItems((prev) => prev.map((it) => (it.id === id ? { ...it, status: "pronta", res: j, error: undefined } : it)));
@@ -53,7 +81,7 @@ export function Fila({ brandName }: { brandName: string }) {
     if (!it.res) return;
     setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, status: "carregando" } : x)));
     await fetch("/api/feedback", { method: "POST", body: JSON.stringify({ responseId: it.res.responseId, kind: "regerada" }) });
-    await runOne(it.id, it.raw, it.res.conversationId, it.res.messageId);
+    await runOne(it.id, it.raw, it.externalThreadId, it.res.conversationId, it.res.messageId);
   }
 
   async function approve(it: Item) {
@@ -64,7 +92,7 @@ export function Fila({ brandName }: { brandName: string }) {
   }
   async function reject(it: Item) {
     if (!it.res) return;
-    await fetch("/api/feedback", { method: "POST", body: JSON.stringify({ responseId: it.res.responseId, kind: "nao_gostei" }) });
+    await fetch("/api/feedback", { method: "POST", body: JSON.stringify({ responseId: it.res.responseId, kind: "reprovada" }) });
     setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, status: "reprovada" } : x)));
   }
   function dismiss(id: string) { setItems((prev) => prev.filter((x) => x.id !== id)); }
@@ -85,19 +113,20 @@ export function Fila({ brandName }: { brandName: string }) {
           <span className="muted">vale para todas as mensagens coladas abaixo</span>
         </div>
         <textarea className="paste" value={bulk} onChange={(e) => setBulk(e.target.value)}
-          placeholder={`Cole várias mensagens recebidas por ${brandName}, uma por bloco, separadas por uma linha com ---\n\nEx.:\ntem álcool? qual o grau?\n---\nnão encontro em Duque de Caxias, RJ\n---\nquero saber sobre revenda, tenho uma cafeteria em Curitiba`}
+          placeholder={`Cole várias mensagens recebidas por ${brandName}, uma por bloco, separadas por uma linha com ---\nOpcional: comece o bloco com "id: <id do tópico>" (da URL do Meta) para evitar duplicar em varreduras futuras.\n\nEx.:\nid: 34028236684171030124\ntem álcool? qual o grau?\n---\nnão encontro em Duque de Caxias, RJ`}
           style={{ minHeight: 160 }} disabled={busy} />
         <div style={{ marginTop: 12 }}>
           <button className="btn" onClick={process} disabled={busy || !bulk.trim()}>{busy ? "Gerando…" : "Gerar respostas"}</button>
         </div>
       </div>
 
-      {pending.length > 0 && (
+      {!loaded && <p className="muted">Carregando fila…</p>}
+      {loaded && pending.length > 0 && (
         <div style={{ display: "grid", gap: 12, marginBottom: 16 }}>
           {pending.map((it) => <Card key={it.id} it={it} onApprove={approve} onReject={reject} onRegenerate={regenerate} onDismiss={dismiss} />)}
         </div>
       )}
-      {!pending.length && !done.length && <p className="muted">Nenhuma mensagem na fila. Cole acima e clique em Gerar respostas.</p>}
+      {loaded && !pending.length && !done.length && <p className="muted">Nenhuma mensagem pendente. Cole acima e clique em Gerar respostas — ou aguarde a próxima varredura.</p>}
 
       {done.length > 0 && (
         <details style={{ marginTop: 8 }}>
@@ -130,11 +159,11 @@ function Card({ it, onApprove, onReject, onRegenerate, onDismiss, compact }: {
           </div>
           {it.res.classification.flags?.length > 0 && <p className="muted" style={{ marginBottom: 8, color: "#7a4a00" }}>⚠ {it.res.classification.flags.join(", ")}</p>}
           <div style={{ whiteSpace: "pre-wrap", fontSize: 15, lineHeight: 1.5, marginBottom: 10 }}>{it.res.text}</div>
-          {it.status === "aprovada" && <p style={{ color: "#1b7f4b", fontSize: 13, marginBottom: 8 }}>✓ Copiada — cole no Meta</p>}
-          {it.status === "reprovada" && <p className="muted" style={{ fontSize: 13, marginBottom: 8 }}>Reprovada, não copiada</p>}
+          {it.status === "aprovada" && <p style={{ color: "#1b7f4b", fontSize: 13, marginBottom: 8 }}>✓ Liberada — vou publicar</p>}
+          {it.status === "reprovada" && <p className="muted" style={{ fontSize: 13, marginBottom: 8 }}>Reprovada, atendimento encerrado</p>}
           {(it.status === "pronta") && (
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <button className="btn" onClick={() => onApprove(it)}>Aprovar e copiar</button>
+              <button className="btn" onClick={() => onApprove(it)}>Liberar publicação</button>
               <button onClick={() => onRegenerate(it)} style={btn()}>Regenerar</button>
               <button onClick={() => onReject(it)} style={btn()}>Reprovar</button>
             </div>
