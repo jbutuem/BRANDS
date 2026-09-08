@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { COMMUNITY_RULES, CIVILITY_RULES, MODERATION_RULES, type Flag } from "./policy";
+import { COMMUNITY_RULES, CIVILITY_RULES, MODERATION_RULES, EMOJI_RULES, type Flag } from "./policy";
 
 const client = () => new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 export const MODEL_FAST = process.env.CLAUDE_MODEL_FAST ?? "claude-haiku-4-5-20251001";
@@ -93,6 +93,7 @@ REGRAS DURAS:
 - SUPERFÍCIE: ${extra?.surface === "comment" ? "COMENTÁRIO PÚBLICO — até 3 linhas, sem dados, sem detalhes de reclamação; convide para o direct quando precisar aprofundar." : "MENSAGEM DIRETA (privada)."}
 ${COMMUNITY_RULES}
 ${CIVILITY_RULES}
+${EMOJI_RULES}
 ${extra?.firstName ? `- A pessoa se chama ${extra.firstName}: use o primeiro nome UMA vez, de forma natural (não em toda frase).` : "- Você não sabe o nome da pessoa: não invente nem use apelidos."}
 ${extra?.history ? "- Esta é a CONTINUAÇÃO de um atendimento. Não se apresente de novo, não repita o que já foi dito e responda ao que a pessoa acabou de dizer, usando o que ela já informou antes." : ""}`,
     messages: [{ role: "user", content:
@@ -123,10 +124,11 @@ ${(cls.flags ?? []).includes("ofensa") || (cls.flags ?? []).includes("discurso_o
 ${(cls.flags ?? []).includes("ameaca") || (cls.flags ?? []).includes("crise") ? "Situação sensível: tom sóbrio, sem emoji, sem humor; acolha, não se justifique, não confirme nem negue nada, e diga que a equipe responsável vai entrar em contato por aqui." : ""}
 SUPERFÍCIE: ${extra?.surface === "comment" ? "comentário público — até 2 linhas e convite para o direct." : "mensagem direta."}
 ${CIVILITY_RULES}
+${EMOJI_RULES}
 FATOS DA MARCA (pode afirmar com segurança): ${voice.facts.length ? voice.facts.join(" | ") : "nenhum"}
 LINKS OFICIAIS: ${voice.links && Object.keys(voice.links).length ? Object.entries(voice.links).map(([k, v]) => `${k}: ${v}`).join(" · ") : "(nenhum cadastrado — não cite link)"}
 Peça informação adicional SÓ quando ela for necessária para o encaminhamento: lote e validade apenas se a pessoa relatou problema com o produto (gosto estranho, embalagem, mal-estar); cidade e tipo de negócio apenas em pedido comercial. Para dúvida de composição, ingredientes ou uso, não peça nada — só confirme que vai apurar.
-Use SOMENTE nomes de produto que existam em PRODUTOS DA BASE abaixo; se a pessoa escreveu errado (ex.: "catchupe"), use o nome correto naturalmente, sem repetir o errado nem corrigir a pessoa. Sem listas, sem títulos, máximo 1 emoji.
+Use SOMENTE nomes de produto que existam em PRODUTOS DA BASE abaixo; se a pessoa escreveu errado (ex.: "catchupe"), use o nome correto naturalmente, sem repetir o errado nem corrigir a pessoa. Sem listas, sem títulos.
 PRODUTOS DA BASE:
 ${context || "(nenhum identificado — não cite nome de produto)"}
 ${extra?.firstName ? `A pessoa se chama ${extra.firstName}; use o primeiro nome uma vez.` : "Não use nome."}${voice.signature ? ` Termine com "${voice.signature}".` : ""}`,
@@ -158,6 +160,7 @@ export function guard(voice: BrandVoice, cls: Classification, message: string, d
 
 ORDEM DE DECISÃO: aprovada → reescrita → redirecionar → escalar → bloqueada. Use o degrau mais baixo que resolva.
 REDIRECIONAR (em vez de escalar) quando a informação pedida não está no contexto MAS é pública e a pessoa pode obter sozinha: composição/ingredientes/alérgenos (rótulo, ficha do produto no site), tabela nutricional, modo de uso básico, horário/canal do SAC. Escalar só quando precisa de apuração interna (reclamação, problema com produto, risco, comercial, jurídico, crise).
+BLOQUEIE ou peça REESCRITA se a resposta usa emoji de careta/língua de fora (😝😜🤪), risada exagerada (😂🤣), deboche/ironia (😏), diabinho (😈) ou mais de 1 emoji — troque por no máximo 1 emoji simples (😊🙂😉👍) ou nenhum.
 BLOQUEIE (civilidade — sem exceção) se a resposta: engaja, brinca, agradece ou oferece produto em reação a uma mensagem ofensiva, machista, sexualizada ou preconceituosa (a única resposta aceitável é um limite curto e firme); contém preconceito ou generalização sobre raça, cor, etnia, gênero, orientação sexual, identidade de gênero, religião, deficiência, idade, origem regional, classe, corpo/peso ou sotaque, mesmo em tom de piada; debocha do cliente; usa palavrão, sarcasmo com pessoa irritada, conteúdo sexual ou ameaça; espelha agressividade; opina sobre política, religião, futebol ou concorrente; confirma/nega recall, processo ou boato; promete compensação/reembolso/brinde.
 BLOQUEIE ou ESCALE se a resposta: garante que o produto "não faz mal"/"é seguro"/"pode consumir" (qualquer garantia de saúde, mesmo em tom leve); usa nome de produto que não existe no contexto (ex.: repete um nome digitado errado pelo cliente); dá orientação médica/nutricional individual; afirma sobre alergia/alérgeno algo que não está no contexto; fala de álcool para menor de idade; promete preço, prazo ou estoque; expõe dado pessoal; contém código/EAN/validade que não está no contexto; responde a uma reclamação séria ou pedido de indenização (→ escalar sac); pergunta técnica que o contexto não cobre (→ escalar tecnico); pedido comercial de grande volume, tabela de preço ou cadastro de distribuidor (→ escalar comercial).
 FATOS DA MARCA (sempre verdadeiros): ${voice.facts.length ? voice.facts.join(" | ") : "nenhum"}.
