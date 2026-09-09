@@ -10,6 +10,10 @@ type Conn = {
 
 const fmt = (d: string | null) => (d ? new Date(d).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "—");
 
+// Os valores gravados são os das CHECK constraints (inglês); a tela mostra em português.
+const STATUS: Record<string, string> = { active: "ativa", pending: "pendente", revoked: "revogada", error: "com erro" };
+const MODE: Record<string, string> = { approval: "aprovação humana", auto: "automático" };
+
 export default async function CanaisPage({ searchParams }: { searchParams: Promise<Record<string, string>> }) {
   const sp = await searchParams;
   const { sb, active } = await getSession();
@@ -24,8 +28,8 @@ export default async function CanaisPage({ searchParams }: { searchParams: Promi
     <div>
       <h2>Canais</h2>
       <p className="lede">
-        Conecte a página do Facebook e o Instagram business de {active!.name}. Comentários e DMs passam a cair
-        na Fila sozinhos. A resposta continua sendo gerada e liberada por uma pessoa — nada é publicado automaticamente.
+        Conecte o Instagram business de {active!.name}. Comentários e DMs passam a cair na Fila sozinhos.
+        A resposta continua sendo gerada e liberada por uma pessoa — nada é publicado automaticamente.
       </p>
 
       {sp.ok && <p className="ok">✓ {sp.ok}</p>}
@@ -40,14 +44,18 @@ export default async function CanaisPage({ searchParams }: { searchParams: Promi
       ) : (
         <table>
           <thead>
-            <tr><th>Canal</th><th>Conta</th><th>Status</th><th>Webhook</th><th>Último evento</th><th /></tr>
+            <tr><th>Canal</th><th>Conta</th><th>Status</th><th>Publicação</th><th>Webhook</th><th>Último evento</th><th /></tr>
           </thead>
           <tbody>
             {conns.map((c) => (
               <tr key={c.id}>
                 <td>{c.provider === "instagram" ? "Instagram" : "Facebook"}</td>
                 <td>{c.display_name ?? c.external_id}<br /><small>{c.external_id}</small></td>
-                <td>{c.status ?? "—"}{c.last_error ? <><br /><small className="erro">{c.last_error}</small></> : null}</td>
+                <td>
+                  {STATUS[c.status ?? ""] ?? c.status ?? "—"}
+                  {c.last_error ? <><br /><small className="erro">{c.last_error}</small></> : null}
+                </td>
+                <td>{MODE[c.mode ?? ""] ?? c.mode ?? "—"}</td>
                 <td>{c.subscribed_at ? "assinado" : "não assinado"}</td>
                 <td>{fmt(c.last_event_at)}</td>
                 <td>
