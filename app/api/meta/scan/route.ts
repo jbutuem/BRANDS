@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import crypto from "node:crypto";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { listMedia, listComments, listConversations, conversationMessages, RateLimited } from "@/lib/meta-read";
+import { listMedia, listComments, listConversations, conversationMessages, autorDe, RateLimited } from "@/lib/meta-read";
 import { ingestItem, type Conn, type SocialItem } from "@/lib/social-ingest";
 
 export const runtime = "nodejs";
@@ -27,9 +27,9 @@ function autorizado(req: Request) {
 }
 
 /**
- * O Instagram Login devolve `username` no comentário, não um id de autor.
- * Guardamos um hash em vez do @: serve para agrupar o mesmo autor no mesmo post,
- * que é o único uso, sem persistir o handle. Responder usa o id do comentário.
+ * Quando a API não devolve id do autor, guardamos um hash do handle em vez do @:
+ * serve para agrupar o mesmo autor no mesmo post, que é o único uso, sem
+ * persistir o identificador. Responder usa o id do comentário.
  */
 function autorOpaco(username: string | undefined): string | null {
   if (!username) return null;
@@ -90,7 +90,7 @@ export async function POST(req: Request) {
           limiteJanela.getTime()
         ));
 
-    let medias = 0, comentarios = 0, dms = 0, criados = 0, pulados = 0;
+    let medias = 0, comentarios = 0, dms = 0, criados = 0, pulados = 0, semAutoria = 0;
     const problemas: string[] = [];
 
     try {
@@ -99,8 +99,15 @@ export async function POST(req: Request) {
         if (!media.comments_count) continue;
         medias++;
 
-        const { comments, nota } = await listComments(media.id, token, igId, handleProprio);
+        const { comments, nota, autoriaConfiavel } = await listComments(media.id, token, igId, handleProprio);
         if (nota) problemas.push(`${media.id}: ${nota}`);
+        if (!autoriaConfiavel) {
+          // Sem autoria a varredura não distingue cliente de resposta da marca, e
+          // devolveria as próprias respostas para a Fila. Melhor não ingerir nada.
+          problemas.push(`${media.id}: autoria indisponível, mídia ignorada`);
+          semAutoria++;
+          continue;
+        }
 
         for (const c of comments) {
           comentarios++;
@@ -108,9 +115,8 @@ export async function POST(req: Request) {
           if (quando && quando < desde) continue;
 
           // Comentário da própria marca não vira atendimento.
-          const handle = (c.username ?? c.from?.username ?? "").toLowerCase();
-          if (handle && handleProprio && handle === handleProprio) continue;
-          if (c.from?.id && c.from.id === igId) continue;
+          if (c.daMarca) { pulados++; continue; }
+          const { id: autorApiId, handle } = autorDe(c);
 
           // Já tem resposta nossa na thread: alguém atendeu, dentro ou fora do app.
           if (c.jaRespondido) { pulados++; continue; }
@@ -121,7 +127,7 @@ export async function POST(req: Request) {
           const item: SocialItem = {
             provider: "instagram", surface: "comment", accountId: igId,
             externalId: c.id, threadId: media.id,
-            authorId: c.from?.id ?? autorOpaco(handle || undefined),
+            authorId: autorApiId ?? autorOpaco(handle || undefined),
             text: texto, url: media.permalink ?? null,
           };
           if ((await ingestItem(admin, conn, item, { origem: "scan", token })) === "novo") criados++;
@@ -163,10 +169,10 @@ export async function POST(req: Request) {
 
       await fecha({
         medias, comments_seen: comentarios, dms_seen: dms, created: criados,
-        outcome: `${criados} novos${pulados ? `, ${pulados} já respondidos` : ""}`,
+        outcome: `${criados} novos${pulados ? `, ${pulados} já respondidos/próprios` : ""}${semAutoria ? `, ${semAutoria} mídias sem autoria` : ""}`,
         detail: problemas.length ? problemas.join(" · ").slice(0, 400) : null,
       });
-      resumo.push({ conta: conn.display_name, medias, comentarios, dms, criados, ja_respondidos: pulados, janela_dias: dias, backfill: primeiro, notas: problemas });
+      resumo.push({ conta: conn.display_name, medias, comentarios, dms, criados, ja_respondidos: pulados, midias_sem_autoria: semAutoria, janela_dias: dias, backfill: primeiro, notas: problemas });
     } catch (e) {
       const limite = e instanceof RateLimited;
       const msg = limite ? "rate limit da Graph API — próximo ciclo continua" : (e instanceof Error ? e.message : String(e));
