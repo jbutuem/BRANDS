@@ -1,5 +1,5 @@
 import { getSession } from "@/lib/brand";
-import { disconnect } from "./actions";
+import { disconnect, checkSubscription } from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -44,7 +44,7 @@ export default async function CanaisPage({ searchParams }: { searchParams: Promi
       ) : (
         <table>
           <thead>
-            <tr><th>Canal</th><th>Conta</th><th>Status</th><th>Publicação</th><th>Webhook</th><th>Último evento</th><th /></tr>
+            <tr><th>Canal</th><th>Conta</th><th>Status</th><th>Publicação</th><th>Assinatura</th><th>Último evento</th><th /></tr>
           </thead>
           <tbody>
             {conns.map((c) => (
@@ -56,7 +56,16 @@ export default async function CanaisPage({ searchParams }: { searchParams: Promi
                   {c.last_error ? <><br /><small className="erro">{c.last_error}</small></> : null}
                 </td>
                 <td>{MODE[c.mode ?? ""] ?? c.mode ?? "—"}</td>
-                <td>{c.subscribed_at ? "assinado" : "não assinado"}</td>
+                <td>
+                  {c.subscribed_at ? "assinado" : "não assinado"}
+                  <br />
+                  <form action={checkSubscription}>
+                    <input type="hidden" name="id" value={c.id} />
+                    <button type="submit" style={{ background: "none", border: "none", padding: 0, textDecoration: "underline", cursor: "pointer", fontSize: 13 }}>
+                      verificar agora
+                    </button>
+                  </form>
+                </td>
                 <td>{fmt(c.last_event_at)}</td>
                 <td>
                   <form action={disconnect}>
@@ -76,6 +85,13 @@ export default async function CanaisPage({ searchParams }: { searchParams: Promi
         <li>Publicar a resposta que o operador liberou, no mesmo comentário ou na mesma conversa.</li>
         <li>Todo texto recebido passa pelo Scrubber antes de ser gravado — telefone, e-mail, @ e link viram marcador.</li>
       </ul>
+
+      <h3>Se nada chega na Fila</h3>
+      <p className="lede">
+        Clique em <strong>verificar agora</strong> acima: ele pergunta ao Instagram se o app está mesmo assinado
+        nesta conta e em quais campos. Se disser que não está, reconecte. Se disser que está e ainda assim nada
+        chega, o problema é do lado do app no painel da Meta — comece checando se ele está em Modo Ativo.
+      </p>
     </div>
   );
 }
