@@ -19,7 +19,9 @@ export async function middleware(request: NextRequest) {
   );
   const { data: { user } } = await supabase.auth.getUser();
   const isLogin = request.nextUrl.pathname.startsWith("/login");
-  const isPublic = /^\/(privacidade|termos)(\/|$)/.test(request.nextUrl.pathname);
+  // Páginas legais precisam ser públicas e sem login: o revisor da Meta abre
+  // essas URLs deslogado, e redirect para /login reprova a submissão.
+  const isPublic = /^\/(privacidade|termos|exclusao-de-dados)(\/|$)/.test(request.nextUrl.pathname);
   if (isPublic) return response;
   if (!user && !isLogin) return NextResponse.redirect(new URL("/login", request.url));
   if (user && isLogin) return NextResponse.redirect(new URL("/workspace", request.url));
