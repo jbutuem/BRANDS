@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { verifySignature, permalink } from "@/lib/meta";
+import { verifySignature, permalink, ownsComment } from "@/lib/meta";
 import { scrubRegex } from "@/lib/scrub";
 
 export const runtime = "nodejs";
@@ -25,15 +25,24 @@ export async function GET(req: Request) {
 type Item = {
   provider: "instagram" | "facebook";
   surface: "dm" | "comment";
-  /** conta que recebeu (IG user id ou page id) — casa com channel_connections.external_id */
-  accountId: string;
-  /** id do comentário ou mid da DM — idempotência e alvo da publicação */
+  /**
+   * Conta que recebeu. Pode vir vazio: no Business Login for Instagram o
+   * entry.id às vezes chega como "0". Quando isso acontece, resolvemos depois.
+   */
+  accountId: string | null;
   externalId: string;
-  /** agrupa o atendimento: id da mídia/post (comentário) ou id do remetente (DM) */
   threadId: string;
   authorId: string | null;
   text: string;
+  /** esqueleto sem texto, guardado só quando o evento não resolve */
+  debug: Record<string, unknown>;
 };
+
+/** entry.id só serve se for um id de verdade — "0" e vazio não são. */
+function validAccountId(v: unknown): string | null {
+  const s = String(v ?? "").trim();
+  return s && s !== "0" ? s : null;
+}
 
 function parse(body: Record<string, unknown>): Item[] {
   const out: Item[] = [];
@@ -42,21 +51,24 @@ function parse(body: Record<string, unknown>): Item[] {
   const entries = Array.isArray(body.entry) ? (body.entry as Record<string, unknown>[]) : [];
 
   for (const entry of entries) {
-    const accountId = String(entry.id ?? "");
-    if (!accountId) continue;
+    const entryAccount = validAccountId(entry.id);
 
-    // --- DMs (IG Messaging e Messenger têm o mesmo formato)
+    // --- DMs
     for (const m of (entry.messaging as Record<string, unknown>[] | undefined) ?? []) {
       const msg = m.message as Record<string, unknown> | undefined;
       if (!msg || msg.is_echo || msg.is_deleted) continue; // eco = mensagem nossa
       const text = String(msg.text ?? "").trim();
       if (!text) continue; // anexo puro: sem texto não há o que classificar
       const sender = (m.sender as { id?: string } | undefined)?.id ?? null;
-      if (!sender || sender === accountId) continue;
+      // Em DM o destinatário É a conta da marca — mais confiável que entry.id.
+      const recipient = validAccountId((m.recipient as { id?: string } | undefined)?.id);
+      const accountId = recipient ?? entryAccount;
+      if (!sender || (accountId && sender === accountId)) continue;
       out.push({
         provider, surface: "dm", accountId,
         externalId: String(msg.mid ?? `${sender}-${m.timestamp ?? Date.now()}`),
         threadId: sender, authorId: sender, text,
+        debug: { entryId: entry.id ?? null, recipient: recipient ?? null, hasText: true },
       });
     }
 
@@ -65,33 +77,82 @@ function parse(body: Record<string, unknown>): Item[] {
       const field = String(ch.field ?? "");
       const v = (ch.value ?? {}) as Record<string, unknown>;
 
-      if (provider === "instagram" && (field === "comments" || field === "mentions")) {
+      if (provider === "instagram" && (field === "comments" || field === "live_comments" || field === "mentions")) {
         const from = v.from as { id?: string } | undefined;
-        if (from?.id && from.id === accountId) continue; // comentário da própria marca
         const text = String(v.text ?? "").trim();
         if (!text) continue;
         const media = (v.media as { id?: string } | undefined)?.id ?? String(v.media_id ?? "");
+        // Alguns payloads trazem o dono da mídia; é a melhor pista quando entry.id falha.
+        const mediaOwner = validAccountId(((v.media as Record<string, unknown> | undefined)?.owner as { id?: string } | undefined)?.id);
+        const accountId = entryAccount ?? mediaOwner;
+        if (from?.id && accountId && from.id === accountId) continue; // comentário da própria marca
         out.push({
           provider, surface: "comment", accountId,
           externalId: String(v.id ?? v.comment_id ?? ""),
           threadId: media || String(v.id ?? ""), authorId: from?.id ?? null, text,
+          debug: { entryId: entry.id ?? null, field, mediaId: media || null, mediaOwner: mediaOwner ?? null, parentId: v.parent_id ?? null },
         });
       }
 
       if (provider === "facebook" && field === "feed" && v.item === "comment" && v.verb === "add") {
         const from = v.from as { id?: string } | undefined;
-        if (from?.id && from.id === accountId) continue;
         const text = String(v.message ?? "").trim();
         if (!text) continue;
+        if (from?.id && entryAccount && from.id === entryAccount) continue;
         out.push({
-          provider, surface: "comment", accountId,
+          provider, surface: "comment", accountId: entryAccount,
           externalId: String(v.comment_id ?? ""),
           threadId: String(v.post_id ?? v.comment_id ?? ""), authorId: from?.id ?? null, text,
+          debug: { entryId: entry.id ?? null, field, postId: v.post_id ?? null },
         });
       }
     }
   }
-  return out.filter((i) => i.externalId && i.accountId);
+  return out.filter((i) => i.externalId);
+}
+
+/* --------------------------------------------------- resolução da conta */
+
+type Conn = { id: string; brand_id: string; page_id: string | null; ig_user_id: string | null; external_id: string };
+
+/**
+ * Descobre a que conexão o evento pertence.
+ *  1. pelo id que veio no payload (caminho normal)
+ *  2. se só existe uma conexão ativa do provedor, é ela
+ *  3. em último caso, pergunta ao Instagram qual token enxerga aquele comentário
+ */
+async function resolveConnection(
+  admin: ReturnType<typeof supabaseAdmin>,
+  it: Item
+): Promise<{ conn: Conn; how: string } | null> {
+  if (it.accountId) {
+    const { data } = await admin
+      .from("channel_connections")
+      .select("id, brand_id, page_id, ig_user_id, external_id")
+      .eq("provider", it.provider)
+      .eq("external_id", it.accountId)
+      .maybeSingle();
+    if (data) return { conn: data as Conn, how: "external_id" };
+  }
+
+  const { data: ativas } = await admin
+    .from("channel_connections")
+    .select("id, brand_id, page_id, ig_user_id, external_id")
+    .eq("provider", it.provider)
+    .eq("status", "active");
+  const conns = (ativas ?? []) as Conn[];
+  if (!conns.length) return null;
+  if (conns.length === 1) return { conn: conns[0], how: "única conexão ativa" };
+
+  // Várias contas conectadas: só o token da dona consegue ler o comentário.
+  if (it.provider === "instagram" && it.surface === "comment") {
+    for (const c of conns) {
+      const { data: sec } = await admin.from("channel_secrets").select("access_token").eq("connection_id", c.id).maybeSingle();
+      if (!sec?.access_token) continue;
+      if (await ownsComment(it.externalId, sec.access_token)) return { conn: c, how: "sondagem de token" };
+    }
+  }
+  return null;
 }
 
 /* ------------------------------------------------------------- ingestão */
@@ -108,53 +169,43 @@ export async function POST(req: Request) {
   let itens: Item[] = [];
   try { itens = parse(JSON.parse(raw)); } catch { return NextResponse.json({ ok: true, ignorado: "payload ilegível" }); }
 
+  let gravados = 0;
   for (const it of itens) {
-    // 1. Idempotência: o Meta reentrega o mesmo evento com frequência.
+    // Idempotência: o Meta reentrega o mesmo evento com frequência.
     const { error: dup } = await admin.from("meta_events").insert({
       provider: it.provider, event_id: it.externalId, object_id: it.accountId, kind: it.surface,
     });
     if (dup) continue; // 23505 = já processado
 
+    const marcar = (patch: Record<string, unknown>) =>
+      admin.from("meta_events").update({ ...patch, processed_at: new Date().toISOString() })
+        .eq("provider", it.provider).eq("event_id", it.externalId);
+
     try {
-      // 2. Conta -> marca
-      const { data: conn } = await admin
-        .from("channel_connections")
-        .select("id, brand_id, page_id, ig_user_id, status")
-        .eq("provider", it.provider)
-        .eq("external_id", it.accountId)
-        .maybeSingle();
-      if (!conn) {
-        await admin.from("meta_events").update({ status: "ignorado", error: "conta sem conexão cadastrada", processed_at: new Date().toISOString() })
-          .eq("provider", it.provider).eq("event_id", it.externalId);
+      const resolved = await resolveConnection(admin, it);
+      if (!resolved) {
+        await marcar({ status: "ignorado", error: "não consegui identificar a conta", debug: it.debug });
         continue;
       }
+      const conn = resolved.conn;
 
-      // 3. Scrubber ANTES de gravar. Texto bruto não encosta no banco.
+      // Scrubber ANTES de gravar. Texto bruto não encosta no banco.
       const s = scrubRegex(it.text);
 
-      // 4. Reaproveita o atendimento: DM agrupa por remetente; comentário agrupa por post.
+      // Reaproveita o atendimento: DM agrupa por remetente; comentário por post + autor.
       let conversationId: string | null = null;
-      const { data: existing } = await admin
+      const base = admin
         .from("conversations")
         .select("id")
         .eq("brand_id", conn.brand_id)
         .eq("external_thread_id", it.threadId)
         .eq("surface", it.surface)
-        .in("status", ["aberta", "respondida"])
-        .order("last_activity", { ascending: false, nullsFirst: false })
-        .limit(1)
-        .maybeSingle();
-
-      // Comentário: só reaproveita se for o mesmo autor no mesmo post; senão vira atendimento novo.
-      if (existing && it.surface === "dm") conversationId = existing.id;
-      if (existing && it.surface === "comment") {
-        const { data: sameAuthor } = await admin
-          .from("conversations").select("id")
-          .eq("brand_id", conn.brand_id).eq("external_thread_id", it.threadId).eq("surface", "comment")
-          .eq("external_author_id", it.authorId ?? "").in("status", ["aberta", "respondida"])
-          .order("last_activity", { ascending: false, nullsFirst: false }).limit(1).maybeSingle();
-        if (sameAuthor) conversationId = sameAuthor.id;
-      }
+        .in("status", ["aberta", "respondida"]);
+      const { data: existing } = await (it.surface === "comment" && it.authorId
+        ? base.eq("external_author_id", it.authorId)
+        : base
+      ).order("last_activity", { ascending: false, nullsFirst: false }).limit(1).maybeSingle();
+      if (existing) conversationId = existing.id;
 
       if (!conversationId) {
         let url: string | null = null;
@@ -182,15 +233,15 @@ export async function POST(req: Request) {
       });
       if (merr && merr.code !== "23505") throw new Error(merr.message);
 
-      await admin.from("channel_connections").update({ last_event_at: new Date().toISOString(), last_error: null }).eq("id", conn.id);
-      await admin.from("meta_events").update({ status: "processado", brand_id: conn.brand_id, processed_at: new Date().toISOString() })
-        .eq("provider", it.provider).eq("event_id", it.externalId);
+      await admin.from("channel_connections")
+        .update({ last_event_at: new Date().toISOString(), last_error: null })
+        .eq("id", conn.id);
+      await marcar({ status: "processado", brand_id: conn.brand_id, object_id: conn.external_id, error: resolved.how === "external_id" ? null : `resolvido por ${resolved.how}` });
+      gravados++;
     } catch (e) {
-      await admin.from("meta_events").update({
-        status: "erro", error: (e instanceof Error ? e.message : String(e)).slice(0, 400), processed_at: new Date().toISOString(),
-      }).eq("provider", it.provider).eq("event_id", it.externalId);
+      await marcar({ status: "erro", error: (e instanceof Error ? e.message : String(e)).slice(0, 400), debug: it.debug });
     }
   }
 
-  return NextResponse.json({ ok: true, recebidos: itens.length });
+  return NextResponse.json({ ok: true, recebidos: itens.length, gravados });
 }
