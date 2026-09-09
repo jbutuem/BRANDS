@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { pendingQueue, awaitingPublication, confirmPublished, type PendingItem, type AwaitingItem } from "./actions";
+import { pendingQueue, awaitingPublication, confirmPublished, discardConversation, type PendingItem, type AwaitingItem } from "./actions";
 
 type Contact = { id: string; kind: string; name: string; email: string | null; whatsapp: string | null };
 type ApiResult = {
@@ -11,12 +11,10 @@ type ApiResult = {
   scrub: Record<string, number>; cleanText: string; latencyMs: number;
 };
 type Item = {
-  id: string; raw: string; status: "carregando" | "pronta" | "erro" | "aprovada" | "reprovada";
+  id: string; raw: string; status: "carregando" | "pronta" | "erro" | "aprovada" | "reprovada" | "descartada";
   res?: ApiResult; error?: string; externalThreadId?: string; externalUrl?: string;
-  /** veio de canal conectado: publica pela API em vez de copiar */
-  connected?: boolean;
-  /** atendimento já existente (webhook ou fila persistida) — nunca criar outro */
-  conversationId?: string;
+  connected?: boolean; conversationId?: string;
+  triagem?: string | null; triagemMotivo?: string | null;
 };
 
 const INTENT: Record<string, string> = { produto: "produto", onde_comprar: "onde comprar", tecnica: "técnica", engajamento: "engajamento", reclamacao: "reclamação", risco: "risco", outro: "outro" };
@@ -31,6 +29,7 @@ function fromPending(p: PendingItem): Item {
   return {
     id: p.messageId, raw: p.content, status: "pronta", externalUrl: p.externalUrl ?? undefined,
     connected: p.connected, conversationId: p.conversationId,
+    triagem: p.triagem, triagemMotivo: p.triagemMotivo,
     res: p.responseId ? {
       conversationId: p.conversationId, messageId: p.messageId, responseId: p.responseId, version: p.version ?? 1,
       text: p.text ?? "", verdict: (p.verdict as ApiResult["verdict"]) ?? "aprovada", reason: p.reason ?? "", escalateTo: null, contacts: [],
@@ -64,7 +63,6 @@ export function Fila({ brandName }: { brandName: string }) {
     setAwaiting((prev) => prev.filter((a) => a.conversationId !== conversationId));
   }
 
-  /** Publica de fato no Meta (comentário ou DM) pelo canal conectado. */
   async function publishToMeta(conversationId: string, responseId: string, text: string) {
     const r = await fetch("/api/meta/publish", { method: "POST", body: JSON.stringify({ conversationId, responseId, text }) });
     const j = await r.json().catch(() => ({}));
@@ -82,16 +80,20 @@ export function Fila({ brandName }: { brandName: string }) {
     }
   }
 
+  /** Tira da Fila sem apagar. Para o que não é atendimento de verdade. */
+  async function discard(it: Item, motivo: string) {
+    if (!it.conversationId) { setItems((prev) => prev.filter((x) => x.id !== it.id)); return; }
+    await discardConversation(it.conversationId, motivo);
+    setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, status: "descartada" } : x)));
+  }
+
   async function process() {
-    // cada bloco pode começar com "id: <numero>" OU com a URL inteira da aba do Meta — evita duplicar em varreduras futuras
     const blocks = bulk.split(/^\s*-{3,}\s*$/m).map((s) => s.trim()).filter(Boolean);
     const parsed = blocks.map((b) => {
       const lines = b.split("\n");
       const first = (lines[0] ?? "").trim();
-      // "id: <numero>" digitado à mão — continua funcionando
       const explicit = first.match(/^id:\s*(\S+)$/i);
       if (explicit) return { raw: lines.slice(1).join("\n").trim(), externalThreadId: explicit[1] };
-      // URL inteira colada na primeira linha — extrai o identificador e guarda o link, sem digitar nada
       if (/^https?:\/\//.test(first)) {
         const rest = lines.slice(1).join("\n").trim();
         const idMatch = first.match(/[?&](?:selected_item_id|item_id|thread_id|comment_id)=([\w.-]+)/i);
@@ -110,19 +112,21 @@ export function Fila({ brandName }: { brandName: string }) {
   async function runOne(id: string, text: string, externalThreadId?: string, conversationId?: string, messageId?: string, externalUrl?: string) {
     try {
       const r = await fetch("/api/respond", { method: "POST", body: JSON.stringify({ text, channel, surface, conversationId, messageId, externalThreadId, externalUrl }) });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        const msg = r.status === 504 || r.status === 502
+          ? "a geração demorou demais e foi interrompida — tente de novo"
+          : (j.error ?? `falha (${r.status})`);
+        setItems((prev) => prev.map((it) => (it.id === id ? { ...it, status: "erro", error: msg } : it)));
+        return;
+      }
       const j = await r.json();
-      if (!r.ok) { setItems((prev) => prev.map((it) => (it.id === id ? { ...it, status: "erro", error: j.error ?? "falha" } : it))); return; }
       setItems((prev) => prev.map((it) => (it.id === id ? { ...it, status: "pronta", res: j, error: undefined } : it)));
     } catch {
-      setItems((prev) => prev.map((it) => (it.id === id ? { ...it, status: "erro", error: "falha de rede" } : it)));
+      setItems((prev) => prev.map((it) => (it.id === id ? { ...it, status: "erro", error: "não consegui falar com o servidor — tente de novo" } : it)));
     }
   }
 
-  /**
-   * Item que chegou pelo webhook e ainda não tem sugestão.
-   * conversationId E messageId vão juntos: sem isso o /api/respond abriria
-   * um atendimento novo e a mensagem ficaria pendurada em duas conversas.
-   */
   async function generate(it: Item) {
     if (!it.conversationId) return;
     setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, status: "carregando" } : x)));
@@ -138,7 +142,6 @@ export function Fila({ brandName }: { brandName: string }) {
 
   async function approve(it: Item) {
     if (!it.res) return;
-    // Canal conectado: publica direto pela API. Varredura manual: copia para o operador colar.
     if (it.connected && it.res.verdict !== "reacao") {
       setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, status: "carregando" } : x)));
       try {
@@ -162,7 +165,8 @@ export function Fila({ brandName }: { brandName: string }) {
   function dismiss(id: string) { setItems((prev) => prev.filter((x) => x.id !== id)); }
 
   const pending = items.filter((i) => i.status === "carregando" || i.status === "pronta" || i.status === "erro");
-  const done = items.filter((i) => i.status === "aprovada" || i.status === "reprovada");
+  const done = items.filter((i) => i.status === "aprovada" || i.status === "reprovada" || i.status === "descartada");
+  const suspeitos = pending.filter((i) => i.triagem === "suspeita_marca").length;
 
   return (
     <div>
@@ -177,20 +181,27 @@ export function Fila({ brandName }: { brandName: string }) {
           <span className="muted">vale para as mensagens coladas abaixo — o que chega pelo canal conectado já vem marcado</span>
         </div>
         <textarea className="paste" value={bulk} onChange={(e) => setBulk(e.target.value)}
-          placeholder={`Cole várias mensagens recebidas por ${brandName}, uma por bloco, separadas por uma linha com ---\nOpcional: cole a URL da aba do Meta como primeira linha do bloco — o identificador do tópico é extraído sozinho, não precisa digitar nada.\n\nEx.:\nhttps://business.facebook.com/latest/inbox/...&selected_item_id=340282366841710301244259604207492832011\ntem álcool? qual o grau?\n---\nnão encontro em Duque de Caxias, RJ`}
-          style={{ minHeight: 160 }} disabled={busy} />
+          placeholder={`Cole várias mensagens recebidas por ${brandName}, uma por bloco, separadas por uma linha com ---`}
+          style={{ minHeight: 140 }} disabled={busy} />
         <div style={{ marginTop: 12 }}>
           <button className="btn" onClick={process} disabled={busy || !bulk.trim()}>{busy ? "Gerando…" : "Gerar respostas"}</button>
         </div>
       </div>
 
+      {suspeitos > 0 && (
+        <p className="muted" style={{ color: "#7a4a00", marginBottom: 12 }}>
+          ⚠ {suspeitos} {suspeitos === 1 ? "item parece ser resposta da própria marca" : "itens parecem ser respostas da própria marca"}.
+          A varredura nem sempre consegue identificar o autor — confira antes de responder.
+        </p>
+      )}
+
       {!loaded && <p className="muted">Carregando fila…</p>}
       {loaded && pending.length > 0 && (
         <div style={{ display: "grid", gap: 12, marginBottom: 16 }}>
-          {pending.map((it) => <Card key={it.id} it={it} onApprove={approve} onReject={reject} onRegenerate={regenerate} onGenerate={generate} onDismiss={dismiss} />)}
+          {pending.map((it) => <Card key={it.id} it={it} onApprove={approve} onReject={reject} onRegenerate={regenerate} onGenerate={generate} onDismiss={dismiss} onDiscard={discard} />)}
         </div>
       )}
-      {loaded && !pending.length && !done.length && <p className="muted">Nenhuma mensagem pendente. Cole acima e clique em Gerar respostas — ou aguarde a próxima varredura.</p>}
+      {loaded && !pending.length && !done.length && <p className="muted">Nenhuma mensagem pendente. A varredura roda de hora em hora — ou cole acima para gerar na hora.</p>}
 
       {awaiting.length > 0 && (
         <div className="panel" style={{ borderLeft: "4px solid #0a4d8c" }}>
@@ -218,7 +229,7 @@ export function Fila({ brandName }: { brandName: string }) {
         <details style={{ marginTop: 8 }}>
           <summary className="muted">Concluídas nesta sessão ({done.length})</summary>
           <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
-            {done.map((it) => <Card key={it.id} it={it} onApprove={approve} onReject={reject} onRegenerate={regenerate} onGenerate={generate} onDismiss={dismiss} compact />)}
+            {done.map((it) => <Card key={it.id} it={it} onApprove={approve} onReject={reject} onRegenerate={regenerate} onGenerate={generate} onDismiss={dismiss} onDiscard={discard} compact />)}
           </div>
         </details>
       )}
@@ -226,25 +237,55 @@ export function Fila({ brandName }: { brandName: string }) {
   );
 }
 
-function Card({ it, onApprove, onReject, onRegenerate, onGenerate, onDismiss, compact }: {
+function Card({ it, onApprove, onReject, onRegenerate, onGenerate, onDismiss, onDiscard, compact }: {
   it: Item; onApprove: (i: Item) => void; onReject: (i: Item) => void; onRegenerate: (i: Item) => void;
-  onGenerate: (i: Item) => void; onDismiss: (id: string) => void; compact?: boolean;
+  onGenerate: (i: Item) => void; onDismiss: (id: string) => void; onDiscard: (i: Item, motivo: string) => void; compact?: boolean;
 }) {
   const badge = it.res ? BADGE[it.res.verdict] : null;
+  const suspeita = it.triagem === "suspeita_marca";
+  const soReacao = it.triagem === "so_reacao";
+  const borda = suspeita ? "#7a4a00" : soReacao ? "#0a7a6c" : badge?.[0];
+
   return (
-    <div className="panel" style={{ margin: 0, opacity: compact ? 0.7 : 1, borderLeft: badge ? `4px solid ${badge[0]}` : undefined }}>
+    <div className="panel" style={{ margin: 0, opacity: compact ? 0.7 : 1, borderLeft: borda ? `4px solid ${borda}` : undefined }}>
       <div className="muted" style={{ fontSize: 13, marginBottom: 8, whiteSpace: "pre-wrap" }}>
         {it.connected && <span title="chegou pelo canal conectado" style={{ marginRight: 6 }}>🔗</span>}
         &quot;{it.raw}&quot;
         {it.externalUrl && <> · <a href={it.externalUrl} target="_blank" rel="noopener noreferrer">abrir no Meta ↗</a></>}
       </div>
 
+      {/* Triagem: aviso, não decisão. Quem resolve é o operador. */}
+      {suspeita && it.status !== "descartada" && (
+        <div style={{ background: "#fdf6e9", border: "1px solid #e6d3a3", borderRadius: 6, padding: "8px 10px", marginBottom: 10, fontSize: 13 }}>
+          <b style={{ color: "#7a4a00" }}>⚠ Provável resposta da própria marca</b>
+          {it.triagemMotivo && <div className="muted" style={{ marginTop: 2 }}>{it.triagemMotivo}</div>}
+          <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button onClick={() => onDiscard(it, "operador confirmou: resposta da própria marca")} style={btn()}>Descartar — é nossa</button>
+            <button onClick={() => onGenerate(it)} style={btn()}>Não é, tratar normalmente</button>
+          </div>
+        </div>
+      )}
+
+      {soReacao && !it.res && it.status === "pronta" && (
+        <div style={{ background: "#eaf6f4", border: "1px solid #b9ddd7", borderRadius: 6, padding: "8px 10px", marginBottom: 10, fontSize: 13 }}>
+          <b style={{ color: "#0a5f55" }}>Parece só elogio ou emoji</b>
+          <div className="muted" style={{ marginTop: 2 }}>Reagir com um emoji no Meta costuma bastar — não precisa escrever.</div>
+          <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button onClick={() => onDiscard(it, "só reação — resolvido com emoji no Meta")} style={btn()}>Já reagi, tirar da fila</button>
+            <button onClick={() => onGenerate(it)} style={btn()}>Gerar resposta mesmo assim</button>
+          </div>
+        </div>
+      )}
+
       {it.status === "carregando" && <p className="muted">Processando…</p>}
       {it.status === "erro" && <p className="error">{it.error}</p>}
+      {it.status === "descartada" && <p className="muted" style={{ fontSize: 13 }}>Descartado — fora da fila</p>}
 
-      {/* Chegou pelo webhook e ainda não tem sugestão */}
-      {!it.res && it.status === "pronta" && (
-        <button className="btn" onClick={() => onGenerate(it)}>Gerar resposta</button>
+      {!it.res && it.status === "pronta" && !suspeita && !soReacao && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button className="btn" onClick={() => onGenerate(it)}>Gerar resposta</button>
+          <button onClick={() => onDiscard(it, "descartado pelo operador")} style={btn()}>Descartar</button>
+        </div>
       )}
 
       {it.res && (
@@ -258,13 +299,14 @@ function Card({ it, onApprove, onReject, onRegenerate, onGenerate, onDismiss, co
           <div style={{ whiteSpace: "pre-wrap", fontSize: it.res.verdict === "reacao" ? 32 : 15, lineHeight: 1.5, marginBottom: 10 }}>{it.res.text}</div>
           {it.status === "aprovada" && <p style={{ color: "#1b7f4b", fontSize: 13, marginBottom: 8 }}>✓ {it.res.verdict === "reacao" ? "Registrada" : it.connected ? "Publicada no Meta" : "Copiada — cole no Meta"}</p>}
           {it.status === "reprovada" && <p className="muted" style={{ fontSize: 13, marginBottom: 8 }}>Reprovada, atendimento encerrado</p>}
-          {(it.status === "pronta") && (
+          {it.status === "pronta" && (
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <button className="btn" onClick={() => onApprove(it)}>
                 {it.res.verdict === "reacao" ? "Registrar reação" : it.connected ? "Publicar no Meta" : "Liberar publicação"}
               </button>
               <button onClick={() => onRegenerate(it)} style={btn()}>Regenerar</button>
               <button onClick={() => onReject(it)} style={btn()}>Reprovar</button>
+              <button onClick={() => onDiscard(it, "descartado pelo operador")} style={btn()}>Descartar</button>
             </div>
           )}
           {compact && <button onClick={() => onDismiss(it.id)} className="muted" style={{ background: "none", border: "none", textDecoration: "underline", cursor: "pointer", fontSize: 13, marginTop: 6 }}>remover da lista</button>}
@@ -273,4 +315,4 @@ function Card({ it, onApprove, onReject, onRegenerate, onGenerate, onDismiss, co
     </div>
   );
 }
-function btn(): React.CSSProperties { return { background: "transparent", color: "var(--ink)", border: "1px solid var(--line)", borderRadius: 6, padding: "10px 14px", cursor: "pointer" }; }
+function btn(): React.CSSProperties { return { background: "transparent", color: "var(--ink)", border: "1px solid var(--line)", borderRadius: 6, padding: "8px 12px", cursor: "pointer", fontSize: 13 }; }
