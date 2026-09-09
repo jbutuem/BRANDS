@@ -9,6 +9,8 @@ type ApiResult = {
   classification: { intent: string; uf: string | null; sentiment: string; summary: string; flags: string[]; surface: string; audience: string; businessType: string | null };
   sources: { products: string[]; distributors: string[]; documents: string[] };
   scrub: Record<string, number>; cleanText: string; latencyMs: number;
+  /** instrução do operador que gerou esta versão, quando houve */
+  instrucao?: string | null;
 };
 type Item = {
   id: string; raw: string; status: "carregando" | "pronta" | "erro" | "aprovada" | "reprovada" | "descartada";
@@ -109,9 +111,9 @@ export function Fila({ brandName }: { brandName: string }) {
     setBusy(false);
   }
 
-  async function runOne(id: string, text: string, externalThreadId?: string, conversationId?: string, messageId?: string, externalUrl?: string) {
+  async function runOne(id: string, text: string, externalThreadId?: string, conversationId?: string, messageId?: string, externalUrl?: string, instrucao?: string) {
     try {
-      const r = await fetch("/api/respond", { method: "POST", body: JSON.stringify({ text, channel, surface, conversationId, messageId, externalThreadId, externalUrl }) });
+      const r = await fetch("/api/respond", { method: "POST", body: JSON.stringify({ text, channel, surface, conversationId, messageId, externalThreadId, externalUrl, instrucao }) });
       if (!r.ok) {
         const j = await r.json().catch(() => ({}));
         const msg = r.status === 504 || r.status === 502
@@ -131,6 +133,18 @@ export function Fila({ brandName }: { brandName: string }) {
     if (!it.conversationId) return;
     setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, status: "carregando" } : x)));
     await runOne(it.id, it.raw, it.externalThreadId, it.conversationId, it.id, it.externalUrl);
+  }
+
+  /**
+   * Refaz a resposta com uma orientação escrita pelo operador.
+   * A instrução chega ao Redator como pedido, não como regra: o Guardião revisa
+   * o resultado do mesmo jeito, e as regras da marca continuam acima dela.
+   */
+  async function redoWithHint(it: Item, instrucao: string) {
+    if (!it.res || !instrucao.trim()) return;
+    setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, status: "carregando" } : x)));
+    await fetch("/api/feedback", { method: "POST", body: JSON.stringify({ responseId: it.res.responseId, kind: "regerada" }) });
+    await runOne(it.id, it.raw, it.externalThreadId, it.res.conversationId, it.res.messageId, it.externalUrl, instrucao.trim());
   }
 
   async function regenerate(it: Item) {
@@ -198,7 +212,7 @@ export function Fila({ brandName }: { brandName: string }) {
       {!loaded && <p className="muted">Carregando fila…</p>}
       {loaded && pending.length > 0 && (
         <div style={{ display: "grid", gap: 12, marginBottom: 16 }}>
-          {pending.map((it) => <Card key={it.id} it={it} onApprove={approve} onReject={reject} onRegenerate={regenerate} onGenerate={generate} onDismiss={dismiss} onDiscard={discard} />)}
+          {pending.map((it) => <Card key={it.id} it={it} onApprove={approve} onReject={reject} onRegenerate={regenerate} onRedo={redoWithHint} onGenerate={generate} onDismiss={dismiss} onDiscard={discard} />)}
         </div>
       )}
       {loaded && !pending.length && !done.length && <p className="muted">Nenhuma mensagem pendente. A varredura roda de hora em hora — ou cole acima para gerar na hora.</p>}
@@ -229,7 +243,7 @@ export function Fila({ brandName }: { brandName: string }) {
         <details style={{ marginTop: 8 }}>
           <summary className="muted">Concluídas nesta sessão ({done.length})</summary>
           <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
-            {done.map((it) => <Card key={it.id} it={it} onApprove={approve} onReject={reject} onRegenerate={regenerate} onGenerate={generate} onDismiss={dismiss} onDiscard={discard} compact />)}
+            {done.map((it) => <Card key={it.id} it={it} onApprove={approve} onReject={reject} onRegenerate={regenerate} onRedo={redoWithHint} onGenerate={generate} onDismiss={dismiss} onDiscard={discard} compact />)}
           </div>
         </details>
       )}
@@ -237,14 +251,24 @@ export function Fila({ brandName }: { brandName: string }) {
   );
 }
 
-function Card({ it, onApprove, onReject, onRegenerate, onGenerate, onDismiss, onDiscard, compact }: {
+function Card({ it, onApprove, onReject, onRegenerate, onRedo, onGenerate, onDismiss, onDiscard, compact }: {
   it: Item; onApprove: (i: Item) => void; onReject: (i: Item) => void; onRegenerate: (i: Item) => void;
+  onRedo: (i: Item, instrucao: string) => void;
   onGenerate: (i: Item) => void; onDismiss: (id: string) => void; onDiscard: (i: Item, motivo: string) => void; compact?: boolean;
 }) {
+  const [instrucao, setInstrucao] = useState("");
+  const [abrirInstrucao, setAbrirInstrucao] = useState(false);
   const badge = it.res ? BADGE[it.res.verdict] : null;
   const suspeita = it.triagem === "suspeita_marca";
   const soReacao = it.triagem === "so_reacao";
   const borda = suspeita ? "#7a4a00" : soReacao ? "#0a7a6c" : badge?.[0];
+
+  function pedirRefazer() {
+    if (!instrucao.trim()) return;
+    onRedo(it, instrucao);
+    setAbrirInstrucao(false);
+    setInstrucao("");
+  }
 
   return (
     <div className="panel" style={{ margin: 0, opacity: compact ? 0.7 : 1, borderLeft: borda ? `4px solid ${borda}` : undefined }}>
@@ -295,6 +319,11 @@ function Card({ it, onApprove, onReject, onRegenerate, onGenerate, onDismiss, on
             <span className="muted" style={{ fontSize: 13 }}>· {INTENT[it.res.classification.intent] ?? it.res.classification.intent}{it.res.classification.uf ? ` · ${it.res.classification.uf}` : ""}{it.res.classification.audience === "b2b" ? ` · B2B${it.res.classification.businessType ? " " + it.res.classification.businessType : ""}` : ""}</span>
           </div>
           {it.res.classification.flags?.length > 0 && <p className="muted" style={{ marginBottom: 8, color: "#7a4a00" }}>⚠ {it.res.classification.flags.join(", ")}</p>}
+          {it.res.instrucao && (
+            <p className="muted" style={{ fontSize: 13, marginBottom: 6, fontStyle: "italic" }}>
+              refeita com: “{it.res.instrucao}”
+            </p>
+          )}
           {it.res.verdict === "reacao" && <p className="muted" style={{ marginBottom: 6 }}>Elogio sem nada específico — clique no emoji do comentário no Meta em vez de escrever.</p>}
           <div style={{ whiteSpace: "pre-wrap", fontSize: it.res.verdict === "reacao" ? 32 : 15, lineHeight: 1.5, marginBottom: 10 }}>{it.res.text}</div>
           {it.status === "aprovada" && <p style={{ color: "#1b7f4b", fontSize: 13, marginBottom: 8 }}>✓ {it.res.verdict === "reacao" ? "Registrada" : it.connected ? "Publicada no Meta" : "Copiada — cole no Meta"}</p>}
@@ -305,8 +334,31 @@ function Card({ it, onApprove, onReject, onRegenerate, onGenerate, onDismiss, on
                 {it.res.verdict === "reacao" ? "Registrar reação" : it.connected ? "Publicar no Meta" : "Liberar publicação"}
               </button>
               <button onClick={() => onRegenerate(it)} style={btn()}>Regenerar</button>
+              <button onClick={() => setAbrirInstrucao((v) => !v)} style={btn()}>Refazer com instrução</button>
               <button onClick={() => onReject(it)} style={btn()}>Reprovar</button>
               <button onClick={() => onDiscard(it, "descartado pelo operador")} style={btn()}>Descartar</button>
+            </div>
+          )}
+          {abrirInstrucao && it.status === "pronta" && (
+            <div style={{ marginTop: 10, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+              <label className="muted" style={{ fontSize: 13, display: "block", marginBottom: 6 }}>
+                O que mudar nesta resposta?
+              </label>
+              <textarea
+                value={instrucao}
+                onChange={(e) => setInstrucao(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) pedirRefazer(); }}
+                placeholder={"Ex.: tire a parte do distribuidor · diga que a receita está no carrossel · mais curto, sem pergunta no fim"}
+                maxLength={400}
+                style={{ width: "100%", minHeight: 62, padding: 8, borderRadius: 6, border: "1px solid var(--line)", fontSize: 14, fontFamily: "inherit", resize: "vertical" }}
+              />
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8, flexWrap: "wrap" }}>
+                <button className="btn" disabled={!instrucao.trim()} onClick={pedirRefazer}>Refazer</button>
+                <button onClick={() => { setAbrirInstrucao(false); setInstrucao(""); }} style={btn()}>Cancelar</button>
+                <span className="muted" style={{ fontSize: 12 }}>
+                  A instrução orienta a redação. As regras da marca e a revisão automática continuam valendo.
+                </span>
+              </div>
             </div>
           )}
           {compact && <button onClick={() => onDismiss(it.id)} className="muted" style={{ background: "none", border: "none", textDecoration: "underline", cursor: "pointer", fontSize: 13, marginTop: 6 }}>remover da lista</button>}
