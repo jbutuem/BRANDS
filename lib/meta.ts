@@ -171,7 +171,7 @@ export async function refreshToken(token: string) {
   });
 }
 
-export type IgAccount = { id: string; user_id?: string; username?: string; name?: string };
+export type IgAccount = { id?: string; user_id?: string; username?: string; name?: string };
 
 /** Conta conectada. Sem Página, sem /me/accounts — é uma conta só por autorização. */
 export async function me(token: string): Promise<IgAccount> {
@@ -189,6 +189,20 @@ export async function subscribe(token: string) {
 
 export async function unsubscribe(token: string) {
   return graph<{ success: boolean }>(GRAPH_IG, "/me/subscribed_apps", { method: "DELETE", token });
+}
+
+/**
+ * Este token enxerga este comentário?
+ * Usado para descobrir a conta dona do evento quando o webhook vem sem entry.id
+ * e há mais de uma conta conectada. Só o token da dona consegue ler o nó.
+ */
+export async function ownsComment(commentId: string, token: string): Promise<boolean> {
+  try {
+    const r = await graph<{ id?: string }>(GRAPH_IG, `/${commentId}`, { token, params: { fields: "id" } });
+    return Boolean(r.id);
+  } catch {
+    return false;
+  }
 }
 
 /* ----------------------------------------------------------- Assinatura */
