@@ -107,14 +107,14 @@ export async function POST(req: Request) {
           const quando = c.timestamp ? new Date(c.timestamp) : null;
           if (quando && quando < desde) continue;
 
-          // Comentário da própria marca não vira atendimento.
+          // Comentário provadamente da própria marca não vira atendimento.
           if (c.daMarca) { pulados++; continue; }
           const { id: autorApiId, handle } = autorDe(c);
 
-          // Autor desconhecido: a API omite o autor em parte dos comentários, e as
-          // respostas da própria marca caem justamente nesse grupo. Sem saber de quem
-          // é, não dá para descartar que seja nossa — então não entra na Fila.
-          if (!autorApiId && !handle) { semAutoria++; continue; }
+          // Autor desconhecido não é motivo para descartar em silêncio: a triagem
+          // marca como suspeita e a Fila mostra o aviso com botão de descartar.
+          const autorConhecido = Boolean(autorApiId || handle);
+          if (!autorConhecido) semAutoria++;
 
           // Já tem resposta nossa na thread: alguém atendeu, dentro ou fora do app.
           if (c.jaRespondido) { pulados++; continue; }
@@ -127,6 +127,7 @@ export async function POST(req: Request) {
             externalId: c.id, threadId: media.id,
             authorId: autorApiId ?? autorOpaco(handle || undefined),
             text: texto, url: media.permalink ?? null,
+            autorConhecido, ehResposta: Boolean(c.parent_id),
           };
           if ((await ingestItem(admin, conn, item, { origem: "scan", token })) === "novo") criados++;
         }
@@ -155,6 +156,7 @@ export async function POST(req: Request) {
           const item: SocialItem = {
             provider: "instagram", surface: "dm", accountId: igId,
             externalId: m.id, threadId: autorId, authorId: autorId, text: texto,
+            autorConhecido: true,
           };
           if ((await ingestItem(admin, conn, item, { origem: "scan", token })) === "novo") criados++;
         }
@@ -167,7 +169,7 @@ export async function POST(req: Request) {
 
       await fecha({
         medias, comments_seen: comentarios, dms_seen: dms, created: criados,
-        outcome: `${criados} novos${pulados ? `, ${pulados} já respondidos/próprios` : ""}${semAutoria ? `, ${semAutoria} sem autoria` : ""}`,
+        outcome: `${criados} novos${pulados ? `, ${pulados} já respondidos/próprios` : ""}${semAutoria ? `, ${semAutoria} sem autoria (marcados)` : ""}`,
         detail: problemas.length ? problemas.join(" · ").slice(0, 400) : null,
       });
       resumo.push({ conta: conn.display_name, medias, comentarios, dms, criados, ja_respondidos: pulados, sem_autoria: semAutoria, janela_dias: dias, backfill: primeiro, notas: problemas });
