@@ -4,9 +4,6 @@
  * Roda em Standard Access. O que travava a leitura não era o nível de acesso e sim
  * o Modo de Desenvolvimento do app — nele a API devolve `data: []` com cursores de
  * paginação preenchidos, sem erro nenhum. Com o app publicado, o conteúdo vem.
- *
- * Campos: o Instagram Login usa `username` no comentário, não o objeto `from` da
- * API antiga via Facebook Login, e não aceita o aninhamento replies{...}.
  */
 import { GRAPH_IG } from "./meta";
 
@@ -24,7 +21,6 @@ async function fetchJson<T>(url: string): Promise<T> {
   }
   const json = (await res.json().catch(() => ({}))) as T & { error?: { message?: string; code?: number } };
   if (!res.ok) {
-    // Códigos 4 e 17 também são limite de uso, sinalizados no corpo.
     if (json.error?.code === 4 || json.error?.code === 17) throw new RateLimited(null);
     throw new Error(`Graph ${res.status}: ${json.error?.message ?? "erro desconhecido"}`);
   }
@@ -60,8 +56,7 @@ export type Media = { id: string; timestamp?: string; comments_count?: number; p
 
 /**
  * Mídias da conta, da mais nova para a mais antiga, paginando até `max`.
- * Não há corte por idade: post antigo continua recebendo comentário novo, e
- * ignorar por data escondia 39 dos 42 posts com comentário da @tgtstudio.
+ * Sem corte por idade: post antigo continua recebendo comentário novo.
  */
 export async function listMedia(igUserId: string, token: string, max = 50): Promise<Media[]> {
   return getAll<Media>(`/${igUserId}/media`, token, { fields: "id,timestamp,comments_count,permalink", limit: "100" }, max);
@@ -73,31 +68,48 @@ export type Comment = {
   timestamp?: string;
   username?: string;
   parent_id?: string;
-  /** id do autor quando a API devolver; no Instagram Login costuma vir só o username */
   from?: { id?: string; username?: string };
+  /** preenchido pela listComments: já existe resposta da própria marca neste comentário */
+  jaRespondido?: boolean;
 };
 
 const COMMENT_FIELDS = "id,text,timestamp,username,parent_id";
 
+function ehDaMarca(c: Comment, igId: string, handle: string): boolean {
+  if (c.from?.id && c.from.id === igId) return true;
+  const u = (c.username ?? c.from?.username ?? "").toLowerCase();
+  return Boolean(u && handle && u === handle);
+}
+
 /**
- * Comentários de uma mídia, já com as respostas de cada um.
- * As respostas vêm pela aresta /replies — o aninhamento inline não é aceito aqui.
+ * Comentários de uma mídia, com as respostas de cada um.
+ *
+ * Marca como `jaRespondido` o comentário que já tem resposta da própria marca —
+ * é o sinal de que alguém já atendeu, dentro ou fora do app. Sem isso a varredura
+ * traria de volta tudo que a equipe já respondeu na mão.
  */
 export async function listComments(
   mediaId: string,
   token: string,
+  igId: string,
+  handleProprio: string,
   max = 100
 ): Promise<{ comments: Comment[]; nota: string | null }> {
   const top = await getAll<Comment>(`/${mediaId}/comments`, token, { fields: COMMENT_FIELDS, limit: "50" }, max);
-  const todos: Comment[] = [...top];
+  const todos: Comment[] = [];
 
   for (const c of top) {
+    let respostas: Comment[] = [];
     try {
       const rr = await get<{ data?: Comment[] }>(`/${c.id}/replies`, token, { fields: COMMENT_FIELDS, limit: "25" });
-      for (const reply of rr.data ?? []) todos.push(reply);
+      respostas = rr.data ?? [];
     } catch {
-      // Sem respostas ou sem permissão para elas: o comentário principal já basta.
+      // Sem respostas ou sem permissão para elas: segue com o comentário principal.
     }
+    const atendido = respostas.some((r) => ehDaMarca(r, igId, handleProprio));
+    todos.push({ ...c, jaRespondido: atendido });
+    // Resposta de terceiro dentro da thread também é interação a tratar.
+    for (const r of respostas) todos.push({ ...r, jaRespondido: atendido });
   }
   return { comments: todos, nota: top.length ? null : "mídia com comentários mas a API devolveu lista vazia" };
 }
@@ -110,6 +122,10 @@ export async function listConversations(token: string, max = 50): Promise<Conver
 
 export type DmMessage = { id: string; message?: string; created_time?: string; from?: { id?: string; username?: string } };
 
+/**
+ * Mensagens de uma conversa, da mais recente para a mais antiga (ordem da API).
+ * Quem chama usa a primeira para saber se a última palavra foi nossa.
+ */
 export async function conversationMessages(conversationId: string, token: string, limit = 25): Promise<DmMessage[]> {
   const r = await get<{ messages?: { data?: DmMessage[] } }>(`/${conversationId}`, token, {
     fields: `messages.limit(${limit}){id,from,message,created_time}`,
