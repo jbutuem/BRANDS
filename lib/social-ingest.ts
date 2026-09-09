@@ -8,6 +8,7 @@
 import { supabaseAdmin } from "./supabase/admin";
 import { permalink, ownsComment } from "./meta";
 import { scrubRegex } from "./scrub";
+import { triar } from "./triagem";
 
 type Admin = ReturnType<typeof supabaseAdmin>;
 
@@ -24,6 +25,10 @@ export type SocialItem = {
   text: string;
   /** permalink já conhecido, evita uma chamada extra */
   url?: string | null;
+  /** a API informou de quem é o item? entra na triagem */
+  autorConhecido?: boolean;
+  /** o comentário é resposta a outro (tem parent_id)? entra na triagem */
+  ehResposta?: boolean;
   debug?: Record<string, unknown>;
 };
 
@@ -88,6 +93,11 @@ export async function ingestItem(
     // Scrubber ANTES de gravar. Texto bruto não encosta no banco.
     const s = scrubRegex(it.text);
 
+    // Triagem sobre o texto já limpo: avisa, não decide. O operador resolve na Fila.
+    const t = it.surface === "comment"
+      ? triar(s.text, it.autorConhecido !== false, it.ehResposta === true)
+      : { tipo: null, motivo: null };
+
     // Reaproveita o atendimento: DM agrupa por remetente; comentário por mídia + autor.
     const base = admin
       .from("conversations")
@@ -111,12 +121,16 @@ export async function ingestItem(
         source: opts.origem, channel_connection_id: conn.id,
         external_thread_id: it.threadId, external_author_id: it.authorId, external_url: url,
         summary: s.text.slice(0, 140), last_activity: new Date().toISOString(),
+        triagem: t.tipo, triagem_motivo: t.motivo,
       }).select("id").single();
       if (error) throw new Error(error.message);
       conversationId = conv.id;
     } else {
       await admin.from("conversations")
-        .update({ status: "aberta", last_activity: new Date().toISOString(), published_at: null })
+        .update({
+          status: "aberta", last_activity: new Date().toISOString(), published_at: null,
+          triagem: t.tipo, triagem_motivo: t.motivo,
+        })
         .eq("id", conversationId);
     }
 
