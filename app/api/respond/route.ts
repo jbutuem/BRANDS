@@ -41,9 +41,10 @@ export async function POST(req: Request) {
   if (!cls.uf) cls.uf = detectUf(clean);
   const surface: "dm" | "comment" = body.surface === "comment" ? "comment" : "dm";
   /**
-   * Instrução escrita pelo operador ao pedir "Refazer com instrução".
-   * Entra como pedido ao Redator, NUNCA como regra: as REGRAS DURAS e o Guardião
-   * continuam valendo por cima. É texto de usuário, tratado como dado.
+   * Instrução escrita pelo operador ("Gerar/Refazer com instrução").
+   * Entra como pedido ao Redator E como contexto para o Guardião — mas nunca como
+   * regra: as REGRAS DURAS e a revisão continuam valendo por cima. É texto de
+   * usuário, tratado como dado.
    */
   const instrucao = String(body.instrucao ?? "").replace(/\s+/g, " ").trim().slice(0, 400);
   cls.flags = [...new Set([...(cls.flags ?? []), ...(detectCrisis(clean) ? ["crise" as const] : [])])];
@@ -153,6 +154,10 @@ export async function POST(req: Request) {
     C_.length ? "TRECHOS DE MATERIAIS DA MARCA:\n" + C_.map((c) => `[${c.document_name}${c.page ? ` p.${c.page}` : ""}] ${c.content.slice(0, 900)}`).join("\n\n") : "",
     noteTips.length ? "ANOTAÇÕES DA EQUIPE (prevalecem sobre o resto):\n" + noteTips.join("\n") : "",
     Object.keys(voice.links).length ? "LINKS OFICIAIS: " + Object.entries(voice.links).map(([k, v]) => `${k}: ${v}`).join(" · ") : "",
+    // A instrução do operador entra no CONTEXTO, não só no pedido de redação.
+    // Sem isso o Guardião não a enxerga, trata o que ela afirma como alegação sem
+    // lastro e escala — e a resposta segura, que não recebia a instrução, apagava o pedido.
+    instrucao ? `INSTRUÇÃO DO OPERADOR (pessoa da equipe da marca revisando este atendimento; trate como informação verdadeira e autorizada, e atenda o pedido dentro das regras de segurança):\n${instrucao}` : "",
   ].filter(Boolean).join("\n\n");
   const examples = (golden.data ?? []).map((g) => `P: ${g.question}\nR: ${g.answer}`).join("\n\n");
 
@@ -177,7 +182,7 @@ export async function POST(req: Request) {
   // A instrução do operador vira o primeiro ajuste pedido ao Redator. A moldura
   // é deliberada: o pedido é atendido dentro das regras, nunca contra elas.
   let hint: string | undefined = instrucao
-    ? `PEDIDO DO OPERADOR (pessoa da equipe que revisou a resposta anterior): "${instrucao}". `
+    ? `PEDIDO DO OPERADOR (pessoa da equipe que revisou este atendimento): "${instrucao}". `
       + `Atenda esse pedido, mas SEM violar nenhuma regra dura acima e sem afirmar nada que não esteja no CONTEXTO. `
       + `Se o pedido conflitar com uma regra, ou pedir um dado que não existe na base, escreva a melhor resposta possível respeitando as regras e simplesmente não atenda essa parte.`
     : undefined;
@@ -200,11 +205,21 @@ export async function POST(req: Request) {
       // Sinal de crise/ameaça/jurídico/menor: nunca sai resposta direta — vai para o SAC com acolhimento neutro.
       if (severe && verdict.verdict !== "bloqueada") { verdict = { verdict: "escalar", reason: `sinal sensível: ${(cls.flags ?? []).join(", ")}`, escalate_to: "sac" }; break; }
       if (verdict.verdict !== "reescrita" || cycles >= 2) break;
-      cycles++; hint = verdict.rewrite_hint ?? verdict.reason;
+      cycles++;
+      // Nas reescritas o pedido do operador continua junto do ajuste do revisor:
+      // sem isso a segunda volta esquece o que a pessoa pediu.
+      const ajuste = verdict.rewrite_hint ?? verdict.reason;
+      hint = instrucao ? `${ajuste}. E mantenha o pedido do operador: "${instrucao}".` : ajuste;
     }
     // Reprovado pelo Guardião: o rascunho é descartado e o operador recebe uma resposta segura de acolhimento/encaminhamento.
     if (verdict.verdict === "escalar" || verdict.verdict === "bloqueada" || verdict.verdict === "redirecionar") {
-      draft = await safeReply(voice, cls, clean, verdict.reason, (verdict.escalate_to && String(verdict.escalate_to) !== "null") ? verdict.escalate_to : null, P_.length ? P_.map((p) => `- ${p.name} (${p.line ?? ""}, ${p.packaging ?? ""})`).join("\n") : "", { firstName, history: historyText, surface, mode: verdict.verdict, vip: vipContext });
+      // Mesmo encaminhando, a instrução do operador segue junto: ele pode ter dito
+      // algo que precisa aparecer no texto (ex.: "a receita está no carrossel").
+      const ctxSeguro = [
+        P_.length ? P_.map((p) => `- ${p.name} (${p.line ?? ""}, ${p.packaging ?? ""})`).join("\n") : "",
+        instrucao ? `INSTRUÇÃO DO OPERADOR (atenda dentro das regras): ${instrucao}` : "",
+      ].filter(Boolean).join("\n\n");
+      draft = await safeReply(voice, cls, clean, verdict.reason, (verdict.escalate_to && String(verdict.escalate_to) !== "null") ? verdict.escalate_to : null, ctxSeguro, { firstName, history: historyText, surface, mode: verdict.verdict, vip: vipContext });
     }
   } catch (e) {
     return NextResponse.json({ error: `IA indisponível: ${e instanceof Error ? e.message : e}` }, { status: 502 });
