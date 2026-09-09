@@ -6,7 +6,11 @@ import { classify, write, guard, safeReply, moderationReply, type BrandVoice, ty
 import { detectUf } from "@/lib/uf";
 import { detectCrisis } from "@/lib/policy";
 
-export const maxDuration = 120;
+// 300s, como a varredura. O pior caso encadeia classificador + até 3 ciclos de
+// Redator/Guardião + resposta segura — 8 chamadas de modelo em sequência.
+// Com o p90 medido em 39s e máximo de 72s, o teto de 120s encostava na cauda
+// e o operador via apenas "falha de rede".
+export const maxDuration = 300;
 export const runtime = "nodejs";
 
 /**
