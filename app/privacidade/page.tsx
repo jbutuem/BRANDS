@@ -1,50 +1,102 @@
-export const metadata = { title: "Política de Privacidade — Listening (TGT Studio)" };
+import { EMPRESA, paginaLegal } from "@/lib/legal";
+
+export const metadata = { title: "Política de Privacidade — Brands (TGT Studio)" };
 
 export default function Privacidade() {
   return (
-    <main style={{ maxWidth: 760, margin: "0 auto", padding: "48px 24px", lineHeight: 1.6 }}>
-      <h1>Política de Privacidade — Listening</h1>
-      <p><b>Última atualização:</b> 3 de setembro de 2026 · <b>Responsável:</b> TGT Studio (contato@tgtstudio.com.br)</p>
+    <main style={paginaLegal}>
+      <h1>Política de Privacidade — Brands</h1>
+      <p><i>Última atualização: {EMPRESA.atualizadoEm}</i></p>
 
-      <h2>1. O que é o Listening</h2>
-      <p>O Listening é uma plataforma da TGT Studio que ajuda equipes de atendimento de marcas a responder mensagens recebidas em redes sociais (Instagram, Facebook, WhatsApp e TikTok). A plataforma sugere respostas com apoio de inteligência artificial; um operador humano da marca revisa e decide o envio, salvo em categorias de baixo risco que a marca opte por automatizar, sempre com identificação de que se trata de atendimento automatizado.</p>
+      <h2>Quem somos</h2>
+      <p>
+        O Brands é uma ferramenta interna de atendimento operada por {EMPRESA.razaoSocial}, CNPJ {EMPRESA.cnpj},
+        com sede em {EMPRESA.endereco}, {EMPRESA.cidade}. Contato: {EMPRESA.email}.
+      </p>
+      <p>
+        A ferramenta é usada pela equipe da TGT Studio para atender, em nome de marcas clientes, as pessoas que
+        comentam nos posts dessas marcas ou lhes enviam mensagens diretas no Instagram.
+      </p>
 
-      <h2>2. Papéis (LGPD)</h2>
-      <p>As marcas que usam o Listening são as <b>controladoras</b> dos dados de seus clientes. A TGT Studio atua como <b>operadora</b>, tratando dados exclusivamente conforme instruções de cada marca e nos termos do contrato de prestação de serviço, que inclui cláusula específica de tratamento de dados pessoais.</p>
-
-      <h2>3. Quais dados são tratados</h2>
+      <h2>Que dados tratamos</h2>
+      <p>Quando uma marca conecta sua conta profissional do Instagram ao Brands, passamos a tratar:</p>
       <ul>
-        <li><b>Conteúdo das mensagens</b> enviadas pelo usuário à marca. Antes de qualquer armazenamento, o texto passa por um processo automático de anonimização que remove nomes, telefones, e-mails, nomes de perfil e links. O texto original existe apenas em memória durante o processamento e não é gravado.</li>
-        <li><b>Identificadores técnicos</b> fornecidos pelas plataformas (por exemplo, o ID de conversa da Meta) apenas pelo tempo necessário para entregar a resposta na mesma conversa.</li>
-        <li><b>Dados dos operadores</b> das marcas: e-mail e registro de quais respostas foram aprovadas.</li>
+        <li>Dados básicos da conta conectada: identificador e nome de usuário da conta profissional.</li>
+        <li>Metadados das publicações da conta: identificador, data e contagem de comentários.</li>
+        <li>Conteúdo de comentários públicos feitos nas publicações da conta.</li>
+        <li>Conteúdo de mensagens diretas recebidas pela conta, e o identificador de quem enviou.</li>
+        <li>Respostas redigidas e aprovadas pela equipe antes da publicação.</li>
       </ul>
-      <p>O Listening <b>não</b> armazena nome, foto, telefone ou nome de usuário dos clientes das marcas, e não constrói perfis de pessoas.</p>
+      <p>
+        O nome de usuário de quem comenta não é armazenado em texto: guardamos apenas um valor derivado, que
+        serve para agrupar comentários do mesmo autor em uma mesma publicação e não permite recuperar o perfil.
+      </p>
+      <p>
+        Não coletamos dados de navegação de terceiros, não usamos cookies de rastreamento publicitário e não
+        acessamos nada além das contas que a própria marca autorizou.
+      </p>
 
-      <h2>4. Para que os dados são usados</h2>
-      <ul>
-        <li>Gerar e enviar respostas às mensagens recebidas pela marca.</li>
-        <li>Permitir que a marca acompanhe seus próprios atendimentos.</li>
-        <li>Produzir estatísticas agregadas e anonimizadas (volume por assunto, região e horário) para a própria marca.</li>
-      </ul>
-      <p>Os dados de uma marca nunca são usados para outra marca nem para treinar modelos de inteligência artificial.</p>
+      <h2>Para que usamos</h2>
+      <p>
+        Exclusivamente para operar o atendimento: reunir num só lugar o que chega pelos canais das marcas,
+        sugerir uma resposta, permitir que uma pessoa da equipe revise e aprove, e publicar a resposta aprovada
+        de volta no Instagram.
+      </p>
+      <p><b>Nenhuma resposta é publicada automaticamente. Toda resposta passa por aprovação humana antes de ir ao ar.</b></p>
 
-      <h2>5. Compartilhamento</h2>
-      <p>Para gerar sugestões de resposta, o texto já anonimizado é processado por provedores de inteligência artificial (Anthropic), sob contrato que veda o uso dos dados para treinamento. A infraestrutura é hospedada em Supabase e Vercel. Não há venda nem compartilhamento de dados com terceiros para fins de marketing.</p>
+      <h2>Remoção de dados pessoais antes do armazenamento</h2>
+      <p>
+        Todo texto recebido passa por um processo automático de limpeza antes de ser gravado. Telefones,
+        e-mails, arroba de usuários e links são substituídos por marcadores genéricos. O objetivo é que o
+        histórico usado para melhorar as respostas não retenha dados de contato de quem escreveu.
+      </p>
 
-      <h2>6. Retenção</h2>
-      <p>Mensagens anonimizadas e respostas são mantidas pelo período definido em contrato com cada marca (padrão: 12 meses) e depois excluídas. Identificadores técnicos das plataformas são descartados ao término de cada atendimento.</p>
+      <h2>Uso de inteligência artificial</h2>
+      <p>
+        O texto recebido, já limpo conforme descrito acima, é enviado a um provedor de modelo de linguagem para
+        gerar a sugestão de resposta. O provedor atua como operador, trata o conteúdo apenas para produzir a
+        sugestão e não o utiliza para treinar modelos.
+      </p>
 
-      <h2>7. Direitos do titular</h2>
-      <p>Você pode solicitar confirmação de tratamento, acesso, correção ou eliminação de dados diretamente à marca com quem conversou, ou pelo e-mail contato@tgtstudio.com.br. Como o conteúdo é anonimizado antes do armazenamento, na maioria dos casos não é possível vincular registros a uma pessoa específica; ainda assim, atenderemos toda solicitação na medida do tecnicamente viável.</p>
+      <h2>Com quem compartilhamos</h2>
+      <p>
+        Não vendemos dados e não os compartilhamos para fins de publicidade. Há compartilhamento apenas com
+        prestadores necessários à operação, na condição de operadores: provedor de hospedagem da aplicação,
+        provedor de banco de dados e provedor de modelo de linguagem. E com a Meta Platforms, quando publicamos
+        a resposta aprovada de volta na conta da marca.
+      </p>
 
-      <h2>8. Dados de plataformas Meta e TikTok</h2>
-      <p>O uso de dados obtidos por meio das APIs da Meta (Instagram, Facebook, WhatsApp) e do TikTok segue os termos e políticas dessas plataformas. Ao desconectar uma conta, os dados associados àquele canal são eliminados em até 30 dias. Para solicitar a exclusão de dados vinculados a uma conta Meta, escreva para contato@tgtstudio.com.br com o assunto "Exclusão de dados".</p>
+      <h2>Por quanto tempo guardamos</h2>
+      <p>
+        Conteúdo de atendimento é mantido enquanto a conta da marca estiver conectada, e por até 12 meses após a
+        desconexão, para histórico de atendimento. Tokens de acesso são apagados imediatamente na desconexão.
+        Pedidos de exclusão são atendidos conforme a seção abaixo.
+      </p>
 
-      <h2>9. Segurança</h2>
-      <p>Acesso por login individual, isolamento de dados por marca no banco de dados, comunicação criptografada (TLS) e segredos de integração armazenados em cofre. Registros de auditoria de quem aprovou cada resposta.</p>
+      <h2>Base legal</h2>
+      <p>
+        Tratamos os dados com base no legítimo interesse de operar o atendimento solicitado pela marca titular da
+        conta, e na execução do contrato entre a TGT Studio e a marca. A conexão da conta é autorizada
+        expressamente por quem administra a conta profissional, pelo login do Instagram.
+      </p>
 
-      <h2>10. Contato</h2>
-      <p>TGT Studio — contato@tgtstudio.com.br</p>
+      <h2>Seus direitos</h2>
+      <p>
+        Nos termos da LGPD (Lei 13.709/2018), e do GDPR quando aplicável, você pode solicitar confirmação de
+        tratamento, acesso, correção, anonimização, portabilidade e exclusão dos seus dados, além de revogar
+        consentimento. Basta escrever para {EMPRESA.email}. Respondemos em até 15 dias.
+      </p>
+
+      <h2>Exclusão de dados</h2>
+      <p>
+        As instruções estão em <a href="/exclusao-de-dados">{EMPRESA.base}/exclusao-de-dados</a>.
+      </p>
+
+      <h2>Alterações</h2>
+      <p>Mudanças nesta política serão publicadas nesta página, com atualização da data no topo.</p>
+
+      <h2>Contato</h2>
+      <p>{EMPRESA.email} — {EMPRESA.endereco}, {EMPRESA.cidade}.</p>
     </main>
   );
 }
