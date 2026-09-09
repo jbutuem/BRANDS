@@ -14,7 +14,7 @@ export const maxDuration = 300;
 export const runtime = "nodejs";
 
 /**
- * POST { text, channel, conversationId?, messageId? }
+ * POST { text, channel, conversationId?, messageId?, instrucao? }
  * Pipeline: Scrubber → Classificador → Retriever → Redator → Guardião (máx. 2 ciclos).
  * brand_id vem SEMPRE da sessão. Texto bruto nunca é gravado.
  */
@@ -40,13 +40,20 @@ export async function POST(req: Request) {
   cls.personal_names = []; // não persiste nomes nem na classificação
   if (!cls.uf) cls.uf = detectUf(clean);
   const surface: "dm" | "comment" = body.surface === "comment" ? "comment" : "dm";
+  /**
+   * Instrução escrita pelo operador ao pedir "Refazer com instrução".
+   * Entra como pedido ao Redator, NUNCA como regra: as REGRAS DURAS e o Guardião
+   * continuam valendo por cima. É texto de usuário, tratado como dado.
+   */
+  const instrucao = String(body.instrucao ?? "").replace(/\s+/g, " ").trim().slice(0, 400);
   cls.flags = [...new Set([...(cls.flags ?? []), ...(detectCrisis(clean) ? ["crise" as const] : [])])];
   const severe = (cls.flags ?? []).some((f) => f === "ameaca" || f === "crise" || f === "juridico" || f === "menor");
   // Moderação só para ódio/sexismo, ou ofensa SEM reclamação real (troll). Cliente irritado reclamando segue o fluxo normal (acolher + SAC).
   const offensive = (cls.flags ?? []).some((f) => f === "discurso_odio" || f === "sexismo") || ((cls.flags ?? []).includes("ofensa") && cls.intent !== "reclamacao");
   // Reação em vez de resposta: elogio puro, sem pergunta, sem produto, sem reclamação — decisão do classificador + trava em código.
   const REACTION_EMOJIS = ["❤️", "👍", "🔥", "🙌", "😊"];
-  const canReact = !!cls.reacao_apenas && cls.intent === "engajamento" && cls.sentiment !== "negativo" && !(cls.flags ?? []).length && cls.substance === "vaga" && !severe && !offensive;
+  // Instrução do operador desliga o atalho de reação: se ele pediu um texto novo, é texto que ele quer.
+  const canReact = !instrucao && !!cls.reacao_apenas && cls.intent === "engajamento" && cls.sentiment !== "negativo" && !(cls.flags ?? []).length && cls.substance === "vaga" && !severe && !offensive;
   const reactionEmoji = canReact ? (REACTION_EMOJIS.includes(cls.emoji_sugerido ?? "") ? cls.emoji_sugerido! : "❤️") : null;
 
   // Pessoa conhecida da marca (diretor, marketing, imprensa...): só quando o operador identifica explicitamente pelo nome
@@ -88,7 +95,8 @@ export async function POST(req: Request) {
       // Não achou o mesmo texto entre os comentários deste post: segue para criar uma conversa nova.
     }
   }
-  if (duplicateOf) {
+  // Com instrução do operador nunca devolvemos a resposta anterior: ele está justamente pedindo outra.
+  if (duplicateOf && !instrucao) {
     const { data: lastResp } = await sb.from("responses").select("id, version, content, verdict, verdict_reason, classifier_out").eq("message_id", duplicateOf).order("version", { ascending: false }).limit(1).maybeSingle();
     if (lastResp) {
       return NextResponse.json({
@@ -165,7 +173,14 @@ export async function POST(req: Request) {
   const commercialText = pick ? `${pick.name}${pick.scope ? ` (${pick.scope})` : ""} — ${[pick.whatsapp ? "WhatsApp " + pick.whatsapp : null, pick.email ? "e-mail " + pick.email : null].filter(Boolean).join(", ") || "sem canal cadastrado"}` : "";
 
   // 3+4. Redator ↔ Guardião (máx. 2 reescritas)
-  let draft = "", verdict: Awaited<ReturnType<typeof guard>> = { verdict: "aprovada", reason: "" }, cycles = 0, hint: string | undefined;
+  let draft = "", verdict: Awaited<ReturnType<typeof guard>> = { verdict: "aprovada", reason: "" }, cycles = 0;
+  // A instrução do operador vira o primeiro ajuste pedido ao Redator. A moldura
+  // é deliberada: o pedido é atendido dentro das regras, nunca contra elas.
+  let hint: string | undefined = instrucao
+    ? `PEDIDO DO OPERADOR (pessoa da equipe que revisou a resposta anterior): "${instrucao}". `
+      + `Atenda esse pedido, mas SEM violar nenhuma regra dura acima e sem afirmar nada que não esteja no CONTEXTO. `
+      + `Se o pedido conflitar com uma regra, ou pedir um dado que não existe na base, escreva a melhor resposta possível respeitando as regras e simplesmente não atenda essa parte.`
+    : undefined;
   try {
     // Elogio puro sem nada a responder: sugere reação (emoji) em vez de texto. Não passa pelo Redator nem pelo Guardião.
     if (canReact && reactionEmoji) {
@@ -233,6 +248,7 @@ export async function POST(req: Request) {
     message_id: messageId, brand_id: brandId, version: (count ?? 0) + 1, content: storedDraft,
     sources: { product_ids: P_.map((p) => p.id), distributor_ids: D_.map((d) => d.id), chunk_ids: C_.map((c) => c.chunk_id) },
     classifier_out: cls, verdict: verdict.verdict, verdict_reason: verdict.reason, rewrite_cycles: cycles,
+    operator_hint: instrucao || null,
     model: process.env.CLAUDE_MODEL ?? "claude-sonnet-5", latency_ms: Date.now() - t0,
   }).select("id, version").single();
   if (rerr) return NextResponse.json({ error: rerr.message }, { status: 500 });
@@ -245,6 +261,6 @@ export async function POST(req: Request) {
     text: draft, verdict: verdict.verdict, reason: verdict.reason, escalateTo: escTo, contacts: esc, commercial,
     classification: { intent: cls.intent, uf: cls.uf, city: cls.city, sentiment: cls.sentiment, summary: cls.summary, flags: cls.flags ?? [], surface, audience: cls.audience ?? "indefinido", businessType: cls.business_type ?? null, businessName: cls.business_name ?? null, leadSignals: cls.lead_signals ?? [], products: cls.products ?? [] },
     sources: { products: P_.map((p) => p.name), distributors: D_.map((d) => d.fantasia), documents: [...new Set(C_.map((c) => c.document_name))] },
-    scrub: s.report, cleanText: clean, latencyMs: Date.now() - t0,
+    scrub: s.report, cleanText: clean, latencyMs: Date.now() - t0, instrucao: instrucao || null,
   });
 }
