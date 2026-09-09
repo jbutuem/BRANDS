@@ -12,6 +12,13 @@ export const dynamic = "force-dynamic";
 const BACKFILL_DIAS = 30;
 /** Nos runs seguintes, sobrepõe a marca d'água para não perder evento na borda. */
 const OVERLAP_MIN = 10;
+/**
+ * Quantas mídias varrer. Não há corte por idade — post antigo recebe comentário
+ * novo, e cortar por data escondia 39 dos 42 posts com comentário da @tgtstudio.
+ * O teto existe só para o run caber no tempo da função e no rate limit.
+ */
+const MIDIAS_BACKFILL = 150;
+const MIDIAS_INCREMENTAL = 50;
 
 function autorizado(req: Request) {
   const esperado = process.env.SCAN_SECRET;
@@ -39,6 +46,8 @@ export async function POST(req: Request) {
   const url = new URL(req.url);
   const trigger = url.searchParams.get("trigger") ?? "cron";
   const brandFilter = url.searchParams.get("brand");
+  /** ?full=1 força tratar como primeiro run: refaz o backfill inteiro. */
+  const forcarBackfill = url.searchParams.get("full") === "1";
 
   let q = admin
     .from("channel_connections")
@@ -69,7 +78,7 @@ export async function POST(req: Request) {
     const igId = conn.ig_user_id ?? conn.external_id;
     const handleProprio = (conn.display_name ?? "").replace(/^@/, "").toLowerCase();
 
-    const primeiro = !conn.backfill_done_at;
+    const primeiro = forcarBackfill || !conn.backfill_done_at;
     const desde = primeiro
       ? new Date(Date.now() - BACKFILL_DIAS * 864e5)
       : new Date(new Date(conn.last_scanned_at ?? Date.now()).getTime() - OVERLAP_MIN * 60000);
@@ -79,9 +88,8 @@ export async function POST(req: Request) {
 
     try {
       /* ---------------------------------------------------- comentários */
-      for (const media of await listMedia(igId, token, primeiro ? 50 : 25)) {
+      for (const media of await listMedia(igId, token, primeiro ? MIDIAS_BACKFILL : MIDIAS_INCREMENTAL)) {
         if (!media.comments_count) continue;
-        if (media.timestamp && new Date(media.timestamp) < new Date(Date.now() - 180 * 864e5)) continue;
         medias++;
 
         const { comments, nota } = await listComments(media.id, token);
@@ -111,7 +119,7 @@ export async function POST(req: Request) {
       }
 
       /* ----------------------------------------------------------- DMs */
-      for (const conv of await listConversations(token, primeiro ? 50 : 25)) {
+      for (const conv of await listConversations(token, primeiro ? 100 : 50)) {
         if (conv.updated_time && new Date(conv.updated_time) < desde) continue;
 
         for (const m of await conversationMessages(conv.id, token)) {
