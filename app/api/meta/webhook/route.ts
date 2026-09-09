@@ -25,10 +25,7 @@ export async function GET(req: Request) {
 type Item = {
   provider: "instagram" | "facebook";
   surface: "dm" | "comment";
-  /**
-   * Conta que recebeu. Pode vir vazio: no Business Login for Instagram o
-   * entry.id às vezes chega como "0". Quando isso acontece, resolvemos depois.
-   */
+  /** Conta que recebeu. Pode vir nulo — o payload de teste do painel manda entry.id = "0". */
   accountId: string | null;
   externalId: string;
   threadId: string;
@@ -38,7 +35,7 @@ type Item = {
   debug: Record<string, unknown>;
 };
 
-/** entry.id só serve se for um id de verdade — "0" e vazio não são. */
+/** entry.id só serve se for id de verdade. "0" é o payload de exemplo do botão Teste. */
 function validAccountId(v: unknown): string | null {
   const s = String(v ?? "").trim();
   return s && s !== "0" ? s : null;
@@ -68,7 +65,7 @@ function parse(body: Record<string, unknown>): Item[] {
         provider, surface: "dm", accountId,
         externalId: String(msg.mid ?? `${sender}-${m.timestamp ?? Date.now()}`),
         threadId: sender, authorId: sender, text,
-        debug: { entryId: entry.id ?? null, recipient: recipient ?? null, hasText: true },
+        debug: { entryId: entry.id ?? null, recipient: recipient ?? null },
       });
     }
 
@@ -82,7 +79,6 @@ function parse(body: Record<string, unknown>): Item[] {
         const text = String(v.text ?? "").trim();
         if (!text) continue;
         const media = (v.media as { id?: string } | undefined)?.id ?? String(v.media_id ?? "");
-        // Alguns payloads trazem o dono da mídia; é a melhor pista quando entry.id falha.
         const mediaOwner = validAccountId(((v.media as Record<string, unknown> | undefined)?.owner as { id?: string } | undefined)?.id);
         const accountId = entryAccount ?? mediaOwner;
         if (from?.id && accountId && from.id === accountId) continue; // comentário da própria marca
@@ -115,12 +111,6 @@ function parse(body: Record<string, unknown>): Item[] {
 
 type Conn = { id: string; brand_id: string; page_id: string | null; ig_user_id: string | null; external_id: string };
 
-/**
- * Descobre a que conexão o evento pertence.
- *  1. pelo id que veio no payload (caminho normal)
- *  2. se só existe uma conexão ativa do provedor, é ela
- *  3. em último caso, pergunta ao Instagram qual token enxerga aquele comentário
- */
 async function resolveConnection(
   admin: ReturnType<typeof supabaseAdmin>,
   it: Item
@@ -159,17 +149,49 @@ async function resolveConnection(
 
 export async function POST(req: Request) {
   const raw = await req.text();
+  const admin = supabaseAdmin();
+
+  /**
+   * Marca a invocação ANTES de validar assinatura ou parsear.
+   * Sem isso não dá para distinguir "a Meta nunca chamou" de "chamou e caiu cedo":
+   * um 401 de assinatura não deixa rastro nenhum no banco.
+   */
+  const assinaturaHeader = req.headers.get("x-hub-signature-256");
+  const { data: hit } = await admin
+    .from("meta_hits")
+    .insert({ bytes: raw.length, has_signature: Boolean(assinaturaHeader), outcome: "recebido" })
+    .select("id")
+    .single();
+  const fecha = (patch: Record<string, unknown>) =>
+    hit?.id ? admin.from("meta_hits").update(patch).eq("id", hit.id) : Promise.resolve();
 
   let assinado = false;
-  try { assinado = verifySignature(raw, req.headers.get("x-hub-signature-256")); } catch { assinado = false; }
-  if (!assinado) return new Response("assinatura inválida", { status: 401 });
+  try { assinado = verifySignature(raw, assinaturaHeader); } catch { assinado = false; }
+  if (!assinado) {
+    await fecha({ signature_ok: false, outcome: "assinatura inválida" });
+    return new Response("assinatura inválida", { status: 401 });
+  }
 
   // A partir daqui sempre devolvemos 200: reentrega do Meta em erro nosso só gera fila presa.
-  const admin = supabaseAdmin();
+  let body: Record<string, unknown>;
   let itens: Item[] = [];
-  try { itens = parse(JSON.parse(raw)); } catch { return NextResponse.json({ ok: true, ignorado: "payload ilegível" }); }
+  try {
+    body = JSON.parse(raw);
+    itens = parse(body);
+  } catch {
+    await fecha({ signature_ok: true, outcome: "payload ilegível" });
+    return NextResponse.json({ ok: true, ignorado: "payload ilegível" });
+  }
+
+  const entriesCount = Array.isArray(body.entry) ? body.entry.length : 0;
+  await fecha({
+    signature_ok: true, object: String(body.object ?? ""), entries: entriesCount, items: itens.length,
+    outcome: itens.length ? "processando" : "nenhum item extraído",
+  });
 
   let gravados = 0;
+  const problemas: string[] = [];
+
   for (const it of itens) {
     // Idempotência: o Meta reentrega o mesmo evento com frequência.
     const { error: dup } = await admin.from("meta_events").insert({
@@ -184,6 +206,7 @@ export async function POST(req: Request) {
     try {
       const resolved = await resolveConnection(admin, it);
       if (!resolved) {
+        problemas.push("conta não identificada");
         await marcar({ status: "ignorado", error: "não consegui identificar a conta", debug: it.debug });
         continue;
       }
@@ -236,11 +259,23 @@ export async function POST(req: Request) {
       await admin.from("channel_connections")
         .update({ last_event_at: new Date().toISOString(), last_error: null })
         .eq("id", conn.id);
-      await marcar({ status: "processado", brand_id: conn.brand_id, object_id: conn.external_id, error: resolved.how === "external_id" ? null : `resolvido por ${resolved.how}` });
+      await marcar({
+        status: "processado", brand_id: conn.brand_id, object_id: conn.external_id,
+        error: resolved.how === "external_id" ? null : `resolvido por ${resolved.how}`,
+      });
       gravados++;
     } catch (e) {
-      await marcar({ status: "erro", error: (e instanceof Error ? e.message : String(e)).slice(0, 400), debug: it.debug });
+      const msg = (e instanceof Error ? e.message : String(e)).slice(0, 400);
+      problemas.push(msg);
+      await marcar({ status: "erro", error: msg, debug: it.debug });
     }
+  }
+
+  if (itens.length) {
+    await fecha({
+      outcome: gravados ? `gravados ${gravados}/${itens.length}` : "nada gravado",
+      detail: problemas.length ? problemas.join(" · ").slice(0, 400) : null,
+    });
   }
 
   return NextResponse.json({ ok: true, recebidos: itens.length, gravados });
