@@ -8,15 +8,14 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 
-/** Janela do primeiro run de cada conexão: traz o histórico parado nas contas. */
-const BACKFILL_DIAS = 30;
+/**
+ * Janela retroativa. Só entra na Fila o que está em aberto nos últimos 10 dias —
+ * atendimento mais antigo que isso não vale a pena responder, e traz ruído.
+ */
+const BACKFILL_DIAS = 10;
 /** Nos runs seguintes, sobrepõe a marca d'água para não perder evento na borda. */
 const OVERLAP_MIN = 10;
-/**
- * Quantas mídias varrer. Não há corte por idade — post antigo recebe comentário
- * novo, e cortar por data escondia 39 dos 42 posts com comentário da @tgtstudio.
- * O teto existe só para o run caber no tempo da função e no rate limit.
- */
+/** Teto de mídias por run: existe para caber no tempo da função e no rate limit. */
 const MIDIAS_BACKFILL = 150;
 const MIDIAS_INCREMENTAL = 50;
 
@@ -46,8 +45,11 @@ export async function POST(req: Request) {
   const url = new URL(req.url);
   const trigger = url.searchParams.get("trigger") ?? "cron";
   const brandFilter = url.searchParams.get("brand");
-  /** ?full=1 força tratar como primeiro run: refaz o backfill inteiro. */
+  /** ?full=1 força tratar como primeiro run: refaz a janela inteira. */
   const forcarBackfill = url.searchParams.get("full") === "1";
+  /** ?dias=N sobrepõe a janela retroativa neste run. */
+  const diasParam = Number(url.searchParams.get("dias"));
+  const dias = Number.isFinite(diasParam) && diasParam > 0 ? diasParam : BACKFILL_DIAS;
 
   let q = admin
     .from("channel_connections")
@@ -79,11 +81,16 @@ export async function POST(req: Request) {
     const handleProprio = (conn.display_name ?? "").replace(/^@/, "").toLowerCase();
 
     const primeiro = forcarBackfill || !conn.backfill_done_at;
+    // Nunca olha além da janela retroativa, nem no incremental.
+    const limiteJanela = new Date(Date.now() - dias * 864e5);
     const desde = primeiro
-      ? new Date(Date.now() - BACKFILL_DIAS * 864e5)
-      : new Date(new Date(conn.last_scanned_at ?? Date.now()).getTime() - OVERLAP_MIN * 60000);
+      ? limiteJanela
+      : new Date(Math.max(
+          new Date(conn.last_scanned_at ?? Date.now()).getTime() - OVERLAP_MIN * 60000,
+          limiteJanela.getTime()
+        ));
 
-    let medias = 0, comentarios = 0, dms = 0, criados = 0;
+    let medias = 0, comentarios = 0, dms = 0, criados = 0, pulados = 0;
     const problemas: string[] = [];
 
     try {
@@ -92,7 +99,7 @@ export async function POST(req: Request) {
         if (!media.comments_count) continue;
         medias++;
 
-        const { comments, nota } = await listComments(media.id, token);
+        const { comments, nota } = await listComments(media.id, token, igId, handleProprio);
         if (nota) problemas.push(`${media.id}: ${nota}`);
 
         for (const c of comments) {
@@ -104,6 +111,9 @@ export async function POST(req: Request) {
           const handle = (c.username ?? c.from?.username ?? "").toLowerCase();
           if (handle && handleProprio && handle === handleProprio) continue;
           if (c.from?.id && c.from.id === igId) continue;
+
+          // Já tem resposta nossa na thread: alguém atendeu, dentro ou fora do app.
+          if (c.jaRespondido) { pulados++; continue; }
 
           const texto = (c.text ?? "").trim();
           if (!texto) continue;
@@ -122,7 +132,13 @@ export async function POST(req: Request) {
       for (const conv of await listConversations(token, primeiro ? 100 : 50)) {
         if (conv.updated_time && new Date(conv.updated_time) < desde) continue;
 
-        for (const m of await conversationMessages(conv.id, token)) {
+        const mensagens = await conversationMessages(conv.id, token);
+        // A API devolve da mais recente para a mais antiga: se a primeira é nossa,
+        // a conversa já foi respondida e não precisa voltar para a Fila.
+        const ultima = mensagens[0];
+        if (ultima?.from?.id && ultima.from.id === igId) { pulados++; continue; }
+
+        for (const m of mensagens) {
           dms++;
           const quando = m.created_time ? new Date(m.created_time) : null;
           if (quando && quando < desde) continue;
@@ -147,10 +163,10 @@ export async function POST(req: Request) {
 
       await fecha({
         medias, comments_seen: comentarios, dms_seen: dms, created: criados,
-        outcome: primeiro ? `backfill: ${criados} novos` : `${criados} novos`,
+        outcome: `${criados} novos${pulados ? `, ${pulados} já respondidos` : ""}`,
         detail: problemas.length ? problemas.join(" · ").slice(0, 400) : null,
       });
-      resumo.push({ conta: conn.display_name, medias, comentarios, dms, criados, backfill: primeiro, notas: problemas });
+      resumo.push({ conta: conn.display_name, medias, comentarios, dms, criados, ja_respondidos: pulados, janela_dias: dias, backfill: primeiro, notas: problemas });
     } catch (e) {
       const limite = e instanceof RateLimited;
       const msg = limite ? "rate limit da Graph API — próximo ciclo continua" : (e instanceof Error ? e.message : String(e));
