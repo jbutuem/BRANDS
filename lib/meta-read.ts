@@ -1,13 +1,12 @@
 /**
  * Leitura da Instagram Graph API para a varredura.
  *
- * Tudo aqui roda em Standard Access: basta para contas profissionais que a gente
- * controla e adicionou ao painel do app. É por isso que a varredura funciona hoje
- * e o webhook de `comments` não — aquele exige Advanced Access.
+ * Roda em Standard Access. O que travava a leitura não era o nível de acesso e sim
+ * o Modo de Desenvolvimento do app — nele a API devolve `data: []` com cursores de
+ * paginação preenchidos, sem erro nenhum. Com o app publicado, o conteúdo vem.
  *
  * Campos: o Instagram Login usa `username` no comentário, não o objeto `from` da
  * API antiga via Facebook Login, e não aceita o aninhamento replies{...}.
- * Pedir campo que não existe faz a Graph devolver lista vazia sem erro.
  */
 import { GRAPH_IG } from "./meta";
 
@@ -17,12 +16,8 @@ export class RateLimited extends Error {
   }
 }
 
-async function get<T>(path: string, token: string, params: Record<string, string> = {}): Promise<T> {
-  const url = new URL(`${GRAPH_IG}${path}`);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-  url.searchParams.set("access_token", token);
-
-  const res = await fetch(url.toString(), { cache: "no-store" });
+async function fetchJson<T>(url: string): Promise<T> {
+  const res = await fetch(url, { cache: "no-store" });
   if (res.status === 429) {
     const ra = res.headers.get("retry-after");
     throw new RateLimited(ra ? Number(ra) : null);
@@ -36,15 +31,40 @@ async function get<T>(path: string, token: string, params: Record<string, string
   return json as T;
 }
 
+function build(path: string, token: string, params: Record<string, string> = {}) {
+  const url = new URL(`${GRAPH_IG}${path}`);
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  url.searchParams.set("access_token", token);
+  return url.toString();
+}
+
+async function get<T>(path: string, token: string, params: Record<string, string> = {}): Promise<T> {
+  return fetchJson<T>(build(path, token, params));
+}
+
+type Paged<T> = { data?: T[]; paging?: { next?: string } };
+
+/** Segue a paginação até o teto. `next` já vem com o token embutido. */
+async function getAll<T>(path: string, token: string, params: Record<string, string>, max: number): Promise<T[]> {
+  const out: T[] = [];
+  let url: string | undefined = build(path, token, params);
+  while (url && out.length < max) {
+    const page: Paged<T> = await fetchJson<Paged<T>>(url);
+    out.push(...(page.data ?? []));
+    url = page.paging?.next;
+  }
+  return out.slice(0, max);
+}
+
 export type Media = { id: string; timestamp?: string; comments_count?: number; permalink?: string };
 
-/** Mídias recentes da conta, da mais nova para a mais antiga. */
-export async function listMedia(igUserId: string, token: string, limit = 25): Promise<Media[]> {
-  const r = await get<{ data?: Media[] }>(`/${igUserId}/media`, token, {
-    fields: "id,timestamp,comments_count,permalink",
-    limit: String(limit),
-  });
-  return r.data ?? [];
+/**
+ * Mídias da conta, da mais nova para a mais antiga, paginando até `max`.
+ * Não há corte por idade: post antigo continua recebendo comentário novo, e
+ * ignorar por data escondia 39 dos 42 posts com comentário da @tgtstudio.
+ */
+export async function listMedia(igUserId: string, token: string, max = 50): Promise<Media[]> {
+  return getAll<Media>(`/${igUserId}/media`, token, { fields: "id,timestamp,comments_count,permalink", limit: "100" }, max);
 }
 
 export type Comment = {
@@ -66,13 +86,9 @@ const COMMENT_FIELDS = "id,text,timestamp,username,parent_id";
 export async function listComments(
   mediaId: string,
   token: string,
-  limit = 50
+  max = 100
 ): Promise<{ comments: Comment[]; nota: string | null }> {
-  const r = await get<{ data?: Comment[] }>(`/${mediaId}/comments`, token, {
-    fields: COMMENT_FIELDS,
-    limit: String(limit),
-  });
-  const top = r.data ?? [];
+  const top = await getAll<Comment>(`/${mediaId}/comments`, token, { fields: COMMENT_FIELDS, limit: "50" }, max);
   const todos: Comment[] = [...top];
 
   for (const c of top) {
@@ -88,12 +104,8 @@ export async function listComments(
 
 export type Conversation = { id: string; updated_time?: string; participants?: { data?: Array<{ id: string; username?: string }> } };
 
-export async function listConversations(token: string, limit = 25): Promise<Conversation[]> {
-  const r = await get<{ data?: Conversation[] }>("/me/conversations", token, {
-    fields: "id,updated_time,participants",
-    limit: String(limit),
-  });
-  return r.data ?? [];
+export async function listConversations(token: string, max = 50): Promise<Conversation[]> {
+  return getAll<Conversation>("/me/conversations", token, { fields: "id,updated_time,participants", limit: "50" }, max);
 }
 
 export type DmMessage = { id: string; message?: string; created_time?: string; from?: { id?: string; username?: string } };
