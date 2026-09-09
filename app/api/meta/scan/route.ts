@@ -99,15 +99,8 @@ export async function POST(req: Request) {
         if (!media.comments_count) continue;
         medias++;
 
-        const { comments, nota, autoriaConfiavel } = await listComments(media.id, token, igId, handleProprio);
+        const { comments, nota } = await listComments(media.id, token, igId, handleProprio);
         if (nota) problemas.push(`${media.id}: ${nota}`);
-        if (!autoriaConfiavel) {
-          // Sem autoria a varredura não distingue cliente de resposta da marca, e
-          // devolveria as próprias respostas para a Fila. Melhor não ingerir nada.
-          problemas.push(`${media.id}: autoria indisponível, mídia ignorada`);
-          semAutoria++;
-          continue;
-        }
 
         for (const c of comments) {
           comentarios++;
@@ -117,6 +110,11 @@ export async function POST(req: Request) {
           // Comentário da própria marca não vira atendimento.
           if (c.daMarca) { pulados++; continue; }
           const { id: autorApiId, handle } = autorDe(c);
+
+          // Autor desconhecido: a API omite o autor em parte dos comentários, e as
+          // respostas da própria marca caem justamente nesse grupo. Sem saber de quem
+          // é, não dá para descartar que seja nossa — então não entra na Fila.
+          if (!autorApiId && !handle) { semAutoria++; continue; }
 
           // Já tem resposta nossa na thread: alguém atendeu, dentro ou fora do app.
           if (c.jaRespondido) { pulados++; continue; }
@@ -150,7 +148,7 @@ export async function POST(req: Request) {
           if (quando && quando < desde) continue;
 
           const autorId = m.from?.id ?? null;
-          if (!autorId || autorId === igId) continue; // mensagem nossa
+          if (!autorId || autorId === igId) continue; // mensagem nossa ou sem autor
           const texto = (m.message ?? "").trim();
           if (!texto) continue;
 
@@ -169,10 +167,10 @@ export async function POST(req: Request) {
 
       await fecha({
         medias, comments_seen: comentarios, dms_seen: dms, created: criados,
-        outcome: `${criados} novos${pulados ? `, ${pulados} já respondidos/próprios` : ""}${semAutoria ? `, ${semAutoria} mídias sem autoria` : ""}`,
+        outcome: `${criados} novos${pulados ? `, ${pulados} já respondidos/próprios` : ""}${semAutoria ? `, ${semAutoria} sem autoria` : ""}`,
         detail: problemas.length ? problemas.join(" · ").slice(0, 400) : null,
       });
-      resumo.push({ conta: conn.display_name, medias, comentarios, dms, criados, ja_respondidos: pulados, midias_sem_autoria: semAutoria, janela_dias: dias, backfill: primeiro, notas: problemas });
+      resumo.push({ conta: conn.display_name, medias, comentarios, dms, criados, ja_respondidos: pulados, sem_autoria: semAutoria, janela_dias: dias, backfill: primeiro, notas: problemas });
     } catch (e) {
       const limite = e instanceof RateLimited;
       const msg = limite ? "rate limit da Graph API — próximo ciclo continua" : (e instanceof Error ? e.message : String(e));
