@@ -54,10 +54,6 @@ async function getAll<T>(path: string, token: string, params: Record<string, str
 
 export type Media = { id: string; timestamp?: string; comments_count?: number; permalink?: string };
 
-/**
- * Mídias da conta, da mais nova para a mais antiga, paginando até `max`.
- * Sem corte por idade: post antigo continua recebendo comentário novo.
- */
 export async function listMedia(igUserId: string, token: string, max = 50): Promise<Media[]> {
   return getAll<Media>(`/${igUserId}/media`, token, { fields: "id,timestamp,comments_count,permalink", limit: "100" }, max);
 }
@@ -69,24 +65,59 @@ export type Comment = {
   username?: string;
   parent_id?: string;
   from?: { id?: string; username?: string };
-  /** preenchido pela listComments: já existe resposta da própria marca neste comentário */
+  user?: { id?: string; username?: string };
+  /** true = comentário da própria marca. Ver resolverAutoria. */
+  daMarca?: boolean;
+  /** já existe resposta da própria marca nesta thread */
   jaRespondido?: boolean;
 };
 
-const COMMENT_FIELDS = "id,text,timestamp,username,parent_id";
+/**
+ * Campos do comentário, do mais rico ao mais pobre.
+ *
+ * Identificar o autor é o que separa comentário de cliente de resposta da própria
+ * marca. Sem isso a varredura devolve as respostas da marca para a Fila e o
+ * operador acaba respondendo a si mesmo — foi o que aconteceu na DaVinci.
+ * A API nem sempre concede `from`/`user`, então tentamos em degraus e a primeira
+ * tentativa que responder vence.
+ */
+const FIELD_TIERS = [
+  "id,text,timestamp,username,parent_id,from{id,username}",
+  "id,text,timestamp,username,parent_id,user{id,username}",
+  "id,text,timestamp,username,parent_id",
+];
+
+async function commentsWithBestFields(path: string, token: string, limit: string, max: number): Promise<{ items: Comment[]; tier: number }> {
+  let ultimoErro: unknown = null;
+  for (let i = 0; i < FIELD_TIERS.length; i++) {
+    try {
+      const items = await getAll<Comment>(path, token, { fields: FIELD_TIERS[i], limit }, max);
+      return { items, tier: i };
+    } catch (e) {
+      if (e instanceof RateLimited) throw e;
+      ultimoErro = e; // campo não permitido: cai para o próximo degrau
+    }
+  }
+  throw ultimoErro instanceof Error ? ultimoErro : new Error("falha ao ler comentários");
+}
+
+/** Autor do comentário, olhando todos os lugares onde a API pode ter colocado. */
+export function autorDe(c: Comment): { id: string | null; handle: string } {
+  return {
+    id: c.from?.id ?? c.user?.id ?? null,
+    handle: (c.username ?? c.from?.username ?? c.user?.username ?? "").toLowerCase(),
+  };
+}
 
 function ehDaMarca(c: Comment, igId: string, handle: string): boolean {
-  if (c.from?.id && c.from.id === igId) return true;
-  const u = (c.username ?? c.from?.username ?? "").toLowerCase();
-  return Boolean(u && handle && u === handle);
+  const a = autorDe(c);
+  if (a.id) return a.id === igId;
+  return Boolean(a.handle && handle && a.handle === handle);
 }
 
 /**
  * Comentários de uma mídia, com as respostas de cada um.
- *
- * Marca como `jaRespondido` o comentário que já tem resposta da própria marca —
- * é o sinal de que alguém já atendeu, dentro ou fora do app. Sem isso a varredura
- * traria de volta tudo que a equipe já respondeu na mão.
+ * Marca `daMarca` (autoria) e `jaRespondido` (já existe resposta nossa na thread).
  */
 export async function listComments(
   mediaId: string,
@@ -94,24 +125,30 @@ export async function listComments(
   igId: string,
   handleProprio: string,
   max = 100
-): Promise<{ comments: Comment[]; nota: string | null }> {
-  const top = await getAll<Comment>(`/${mediaId}/comments`, token, { fields: COMMENT_FIELDS, limit: "50" }, max);
+): Promise<{ comments: Comment[]; nota: string | null; autoriaConfiavel: boolean }> {
+  const { items: top, tier } = await commentsWithBestFields(`/${mediaId}/comments`, token, "50", max);
+  // Degrau 2 = sem from nem user: só dá para comparar handle, e a API às vezes
+  // omite username também. Nesse caso a autoria não é confiável.
+  const autoriaConfiavel = tier < 2 || top.some((c) => c.username);
   const todos: Comment[] = [];
 
   for (const c of top) {
     let respostas: Comment[] = [];
     try {
-      const rr = await get<{ data?: Comment[] }>(`/${c.id}/replies`, token, { fields: COMMENT_FIELDS, limit: "25" });
-      respostas = rr.data ?? [];
+      const rr = await commentsWithBestFields(`/${c.id}/replies`, token, "25", 25);
+      respostas = rr.items;
     } catch {
-      // Sem respostas ou sem permissão para elas: segue com o comentário principal.
+      // Sem respostas ou sem permissão: segue com o comentário principal.
     }
     const atendido = respostas.some((r) => ehDaMarca(r, igId, handleProprio));
-    todos.push({ ...c, jaRespondido: atendido });
-    // Resposta de terceiro dentro da thread também é interação a tratar.
-    for (const r of respostas) todos.push({ ...r, jaRespondido: atendido });
+    todos.push({ ...c, daMarca: ehDaMarca(c, igId, handleProprio), jaRespondido: atendido });
+    for (const r of respostas) todos.push({ ...r, daMarca: ehDaMarca(r, igId, handleProprio), jaRespondido: atendido });
   }
-  return { comments: todos, nota: top.length ? null : "mídia com comentários mas a API devolveu lista vazia" };
+  return {
+    comments: todos,
+    nota: top.length ? null : "mídia com comentários mas a API devolveu lista vazia",
+    autoriaConfiavel,
+  };
 }
 
 export type Conversation = { id: string; updated_time?: string; participants?: { data?: Array<{ id: string; username?: string }> } };
@@ -122,10 +159,7 @@ export async function listConversations(token: string, max = 50): Promise<Conver
 
 export type DmMessage = { id: string; message?: string; created_time?: string; from?: { id?: string; username?: string } };
 
-/**
- * Mensagens de uma conversa, da mais recente para a mais antiga (ordem da API).
- * Quem chama usa a primeira para saber se a última palavra foi nossa.
- */
+/** Mensagens da conversa, da mais recente para a mais antiga (ordem da API). */
 export async function conversationMessages(conversationId: string, token: string, limit = 25): Promise<DmMessage[]> {
   const r = await get<{ messages?: { data?: DmMessage[] } }>(`/${conversationId}`, token, {
     fields: `messages.limit(${limit}){id,from,message,created_time}`,
