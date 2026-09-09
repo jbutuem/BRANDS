@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import crypto from "node:crypto";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { listMedia, listComments, listConversations, conversationMessages, RateLimited } from "@/lib/meta-read";
 import { ingestItem, type Conn, type SocialItem } from "@/lib/social-ingest";
@@ -19,6 +20,16 @@ function autorizado(req: Request) {
   return h === esperado;
 }
 
+/**
+ * O Instagram Login devolve `username` no comentário, não um id de autor.
+ * Guardamos um hash em vez do @: serve para agrupar o mesmo autor no mesmo post,
+ * que é o único uso, sem persistir o handle. Responder usa o id do comentário.
+ */
+function autorOpaco(username: string | undefined): string | null {
+  if (!username) return null;
+  return "ig_" + crypto.createHash("sha256").update(username.toLowerCase()).digest("hex").slice(0, 24);
+}
+
 type Row = Conn & { display_name: string | null; last_scanned_at: string | null; backfill_done_at: string | null };
 
 export async function POST(req: Request) {
@@ -27,7 +38,7 @@ export async function POST(req: Request) {
   const admin = supabaseAdmin();
   const url = new URL(req.url);
   const trigger = url.searchParams.get("trigger") ?? "cron";
-  const brandFilter = url.searchParams.get("brand"); // opcional: varre só uma marca
+  const brandFilter = url.searchParams.get("brand");
 
   let q = admin
     .from("channel_connections")
@@ -56,8 +67,8 @@ export async function POST(req: Request) {
     }
     const token = sec.access_token;
     const igId = conn.ig_user_id ?? conn.external_id;
+    const handleProprio = (conn.display_name ?? "").replace(/^@/, "").toLowerCase();
 
-    // Primeiro run: janela larga. Depois: desde a marca d'água, com sobreposição.
     const primeiro = !conn.backfill_done_at;
     const desde = primeiro
       ? new Date(Date.now() - BACKFILL_DIAS * 864e5)
@@ -70,25 +81,29 @@ export async function POST(req: Request) {
       /* ---------------------------------------------------- comentários */
       for (const media of await listMedia(igId, token, primeiro ? 50 : 25)) {
         if (!media.comments_count) continue;
-        if (media.timestamp && new Date(media.timestamp) < new Date(Date.now() - 180 * 864e5)) continue; // post muito antigo
+        if (media.timestamp && new Date(media.timestamp) < new Date(Date.now() - 180 * 864e5)) continue;
         medias++;
 
-        for (const c of await listComments(media.id, token)) {
+        const { comments, nota } = await listComments(media.id, token);
+        if (nota) problemas.push(`${media.id}: ${nota}`);
+
+        for (const c of comments) {
           comentarios++;
           const quando = c.timestamp ? new Date(c.timestamp) : null;
           if (quando && quando < desde) continue;
 
-          const autorId = c.from?.id ?? null;
           // Comentário da própria marca não vira atendimento.
-          if (autorId && autorId === igId) continue;
-          if (!c.from?.id && c.username && conn.display_name === `@${c.username}`) continue;
+          const handle = (c.username ?? c.from?.username ?? "").toLowerCase();
+          if (handle && handleProprio && handle === handleProprio) continue;
+          if (c.from?.id && c.from.id === igId) continue;
 
           const texto = (c.text ?? "").trim();
           if (!texto) continue;
 
           const item: SocialItem = {
             provider: "instagram", surface: "comment", accountId: igId,
-            externalId: c.id, threadId: media.id, authorId: autorId,
+            externalId: c.id, threadId: media.id,
+            authorId: c.from?.id ?? autorOpaco(handle || undefined),
             text: texto, url: media.permalink ?? null,
           };
           if ((await ingestItem(admin, conn, item, { origem: "scan", token })) === "novo") criados++;
@@ -127,7 +142,7 @@ export async function POST(req: Request) {
         outcome: primeiro ? `backfill: ${criados} novos` : `${criados} novos`,
         detail: problemas.length ? problemas.join(" · ").slice(0, 400) : null,
       });
-      resumo.push({ conta: conn.display_name, medias, comentarios, dms, criados, backfill: primeiro });
+      resumo.push({ conta: conn.display_name, medias, comentarios, dms, criados, backfill: primeiro, notas: problemas });
     } catch (e) {
       const limite = e instanceof RateLimited;
       const msg = limite ? "rate limit da Graph API — próximo ciclo continua" : (e instanceof Error ? e.message : String(e));
@@ -137,7 +152,7 @@ export async function POST(req: Request) {
       }
       await fecha({
         medias, comments_seen: comentarios, dms_seen: dms, created: criados,
-        outcome: limite ? "rate limit" : "erro", detail: msg.slice(0, 400),
+        outcome: limite ? "rate limit" : "erro", detail: [msg, ...problemas].join(" · ").slice(0, 400),
       });
       resumo.push({ conta: conn.display_name, erro: msg, criados });
     }
