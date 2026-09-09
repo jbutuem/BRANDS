@@ -1,10 +1,13 @@
 /**
  * Leitura da Instagram Graph API para a varredura.
  *
- * Tudo aqui roda em Standard Access: a doc de comment moderation diz que basta
- * para contas profissionais que você controla e adicionou ao painel do app.
- * É o motivo de a varredura funcionar hoje e o webhook de `comments` não —
- * aquele exige Advanced Access.
+ * Tudo aqui roda em Standard Access: basta para contas profissionais que a gente
+ * controla e adicionou ao painel do app. É por isso que a varredura funciona hoje
+ * e o webhook de `comments` não — aquele exige Advanced Access.
+ *
+ * Campos: o Instagram Login usa `username` no comentário, não o objeto `from` da
+ * API antiga via Facebook Login, e não aceita o aninhamento replies{...}.
+ * Pedir campo que não existe faz a Graph devolver lista vazia sem erro.
  */
 import { GRAPH_IG } from "./meta";
 
@@ -26,7 +29,7 @@ async function get<T>(path: string, token: string, params: Record<string, string
   }
   const json = (await res.json().catch(() => ({}))) as T & { error?: { message?: string; code?: number } };
   if (!res.ok) {
-    // Código 4 e 17 também são limite de uso, só que sinalizados no corpo.
+    // Códigos 4 e 17 também são limite de uso, sinalizados no corpo.
     if (json.error?.code === 4 || json.error?.code === 17) throw new RateLimited(null);
     throw new Error(`Graph ${res.status}: ${json.error?.message ?? "erro desconhecido"}`);
   }
@@ -49,22 +52,38 @@ export type Comment = {
   text?: string;
   timestamp?: string;
   username?: string;
+  parent_id?: string;
+  /** id do autor quando a API devolver; no Instagram Login costuma vir só o username */
   from?: { id?: string; username?: string };
-  replies?: { data?: Comment[] };
 };
 
-/** Comentários de uma mídia, incluindo as respostas aninhadas. */
-export async function listComments(mediaId: string, token: string, limit = 50): Promise<Comment[]> {
+const COMMENT_FIELDS = "id,text,timestamp,username,parent_id";
+
+/**
+ * Comentários de uma mídia, já com as respostas de cada um.
+ * As respostas vêm pela aresta /replies — o aninhamento inline não é aceito aqui.
+ */
+export async function listComments(
+  mediaId: string,
+  token: string,
+  limit = 50
+): Promise<{ comments: Comment[]; nota: string | null }> {
   const r = await get<{ data?: Comment[] }>(`/${mediaId}/comments`, token, {
-    fields: "id,text,timestamp,username,from,replies{id,text,timestamp,username,from}",
+    fields: COMMENT_FIELDS,
     limit: String(limit),
   });
-  const flat: Comment[] = [];
-  for (const c of r.data ?? []) {
-    flat.push(c);
-    for (const r2 of c.replies?.data ?? []) flat.push(r2);
+  const top = r.data ?? [];
+  const todos: Comment[] = [...top];
+
+  for (const c of top) {
+    try {
+      const rr = await get<{ data?: Comment[] }>(`/${c.id}/replies`, token, { fields: COMMENT_FIELDS, limit: "25" });
+      for (const reply of rr.data ?? []) todos.push(reply);
+    } catch {
+      // Sem respostas ou sem permissão para elas: o comentário principal já basta.
+    }
   }
-  return flat;
+  return { comments: todos, nota: top.length ? null : "mídia com comentários mas a API devolveu lista vazia" };
 }
 
 export type Conversation = { id: string; updated_time?: string; participants?: { data?: Array<{ id: string; username?: string }> } };
