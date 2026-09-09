@@ -8,7 +8,11 @@ export default async function FilaPage() {
   return (
     <div key={active!.id}>
       <h2>Fila de respostas</h2>
-      <p className="lede">Cole várias mensagens de uma vez, gere todas juntas e aprove em lote. Nada é enviado automaticamente — aprovar copia o texto para você colar no Meta.</p>
+      <p className="lede">
+        Comentários e DMs dos canais conectados caem aqui sozinhos. Você também pode colar mensagens à mão,
+        várias de uma vez. Nada sai sem alguém liberar: em canal conectado, aprovar publica no Instagram;
+        no resto, aprovar copia o texto para você colar.
+      </p>
       <Fila brandName={active!.name} />
     </div>
   );
