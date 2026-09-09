@@ -69,8 +69,9 @@ export async function GET(req: Request) {
           provider: "instagram",
           external_id: igId,
           display_name: display,
-          status: subscribeErr ? "erro" : "ativa",
-          mode: "sugestao", // humano no meio: nada publica sozinho
+          // status e mode são CHECK constraints em inglês — ver channel_connections_*_check.
+          status: subscribeErr ? "error" : "active",
+          mode: "approval", // humano no meio: nada publica sozinho
           page_id: null,    // este fluxo não usa Página do Facebook
           ig_user_id: igId,
           subscribed_at: subscribeErr ? null : new Date().toISOString(),
