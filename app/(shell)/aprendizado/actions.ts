@@ -49,3 +49,15 @@ export async function removeNote(id: string) {
   await sb.from("brand_notes").update({ is_active: false }).eq("id", id);
   revalidatePath("/aprendizado");
 }
+
+/**
+ * Aprova ou descarta uma candidata a resposta de referência.
+ * Aprovar promove para golden_responses, que é o que o Retriever lê e injeta
+ * como exemplo em TODAS as respostas seguintes da marca — por isso é decisão
+ * humana e restrita a admin/gestor pela RLS.
+ */
+export async function decidirCandidata(id: string, aprovar: boolean) {
+  const { sb } = await getSession();
+  await sb.rpc("promover_candidata", { p_id: id, p_aprovar: aprovar });
+  revalidatePath("/aprendizado");
+}
