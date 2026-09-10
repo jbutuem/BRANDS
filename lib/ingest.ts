@@ -7,6 +7,10 @@ export type Chunk = { content: string; page: number | null };
 
 const MODEL = process.env.CLAUDE_MODEL ?? "claude-sonnet-5";
 
+const REGRAS_TRANSCRICAO = `- Preserve nomes de produtos, códigos, EAN, DUN, NCM, validade, peso, quantidade por caixa, aplicações, claims e descrições exatamente como aparecem.
+- Tabelas viram linhas "campo: valor".
+- Não resuma, não invente, não comente.`;
+
 /** PDFs (inclusive os que são só imagem) passam pelo Claude via URL assinada. */
 export async function extractPdfViaClaude(signedUrl: string): Promise<{ pages: string[]; text: string }> {
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -21,15 +25,50 @@ export async function extractPdfViaClaude(signedUrl: string): Promise<{ pages: s
 `Transcreva TODO o conteúdo textual deste documento, página por página, em português.
 Regras:
 - Comece cada página com uma linha exatamente assim: "=== PÁGINA N ==="
-- Preserve nomes de produtos, códigos, EAN, DUN, NCM, validade, peso, quantidade por caixa, aplicações, claims e descrições exatamente como aparecem.
-- Tabelas viram linhas "campo: valor".
-- Não resuma, não invente, não comente. Se uma página é só imagem sem texto, escreva "(sem texto)".` },
+${REGRAS_TRANSCRICAO}
+- Se uma página é só imagem sem texto, escreva "(sem texto)".` },
       ],
     }],
   });
   const text = res.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("\n");
   const pages = text.split(/=== PÁGINA \d+ ===/).map((p) => p.trim()).filter(Boolean);
   return { pages, text };
+}
+
+/** Formatos de imagem aceitos como entrada visual pela API. */
+export const IMAGEM_MIME: Record<string, "image/jpeg" | "image/png" | "image/gif" | "image/webp"> = {
+  jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp",
+};
+
+/** Tipos de texto simples que podem ser lidos direto como UTF-8. */
+export const TEXTO_SIMPLES = ["txt", "md", "csv", "json", "html", "htm"];
+
+/**
+ * Imagem (print de rótulo, foto de tabela, arte de post) pelo mesmo caminho do PDF.
+ * Antes caía num else que fazia buf.toString("utf8"): o binário virava lixo, os
+ * pedaços eram descartados por tamanho e o documento era marcado "pronto" com zero
+ * trechos — falha silenciosa, a tela dizia que deu certo e nada era indexado.
+ */
+export async function extractImageViaClaude(buf: Buffer, ext: string): Promise<string> {
+  const mediaType = IMAGEM_MIME[ext.toLowerCase()];
+  if (!mediaType) throw new Error(`formato de imagem não suportado: ${ext}`);
+  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const res = await client.messages.create({
+    model: MODEL,
+    max_tokens: 8000,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "image", source: { type: "base64", media_type: mediaType, data: buf.toString("base64") } },
+        { type: "text", text:
+`Transcreva TODO o conteúdo textual desta imagem, em português.
+${REGRAS_TRANSCRICAO}
+- Se houver rótulo, tabela nutricional ou ficha técnica, transcreva campo a campo.
+- Descreva brevemente o que a imagem mostra APENAS se não houver texto algum.` },
+      ],
+    }],
+  });
+  return res.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("\n").trim();
 }
 
 export async function extractDocx(buf: Buffer): Promise<string> {
